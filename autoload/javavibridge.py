@@ -5,8 +5,18 @@ import socket
 import sys
 import time
 import subprocess
+import os
 
-SERVER = ('127.0.0.1', 9999)
+# function to get free port from ycmd
+def GetUnusedLocalhostPort():
+  sock = socket.socket()
+  # This tells the OS to give us any free port in the range [1024 - 65535]
+  sock.bind(('', 0))
+  port = sock.getsockname()[1]
+  sock.close()
+  return port
+
+SERVER = ('127.0.0.1', GetUnusedLocalhostPort())
 
 # A wrapper for subprocess.Popen that works around a Popen bug on Windows.
 def SafePopen(*args, **kwargs):
@@ -20,11 +30,19 @@ class JavaviBridge():
     sock = None
     popen = None
 
-    def setupServer(self, javabin, args):
-        self.popen = SafePopen([javabin + ' ' + args + ' ' + str(SERVER[1])], shell=True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+    def setupServer(self, javabin, args, classpath):
+        environ = os.environ.copy()
+        if 'CLASSPATH' in environ:
+            environ['CLASSPATH'] = environ['CLASSPATH'] + (';' if sys.platform == 'win32' else ':') + classpath
+        else:
+            environ['CLASSPATH'] = classpath
+        self.popen = SafePopen(javabin + ' ' + args + ' ' + str(SERVER[1]), shell=True, env=environ, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
 
     def pid(self):
         return self.popen.pid
+
+    def port(self):
+        return SERVER[1]
 
     def poll(self):
         return self.popen.poll() is None
@@ -40,13 +58,14 @@ class JavaviBridge():
 
         try:
             self.sock.connect(SERVER)
+            time.sleep(.1)
         except socket.error as msg:
             self.sock.close()
             self.sock = None
 
         if self.sock is None:
-            print('could not open socket')
-            sys.exit(1)
+            print('could not open socket, try again')
+            return
 
         self.sock.setblocking(0)
 
@@ -56,7 +75,7 @@ class JavaviBridge():
             print("creating socket")
             self.makeSocket()
             if self.sock is None:
-                return {}
+                return ''
 
         self.sock.sendall(data + '\n')
         totalData = []

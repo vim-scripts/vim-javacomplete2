@@ -2,7 +2,7 @@
 " Language:	Java
 " Maintainer:	cheng fang <fangread@yahoo.com.cn>
 " Last Changed: 2007-09-16
-" Version:	0.67
+" Version:	0.68
 " Copyright:	Copyright (C) 2007 cheng fang.	All rights reserved.
 " License:	Vim License	(see vim's :help license)
 
@@ -95,7 +95,7 @@ fu! java_parser#InitParser(lines, ...)
   let b:lastmode = 0		" The mode of the term that was parsed last.
 
 
-  let b:log = []
+  let s:log = []
 
   let b:et_perf = ''
   let b:et_nextToken_count = 0
@@ -238,6 +238,21 @@ fu! java_parser#type2Str(type)
   elseif t.tag == 'TYPEARRAY'
     return java_parser#type2Str(t.elementtype) . '[]'
   elseif t.tag == 'TYPEAPPLY'
+    let s = ''
+    for arg in t.arguments
+      if arg.tag == 'TYPEAPPLY'
+        let s .= java_parser#type2Str(arg). ','
+      elseif arg.tag == 'TYPEARRAY'
+        let s .= java_parser#type2Str(arg). ','
+      elseif has_key(arg, 'name')
+        let s .= arg.name. ','
+      endif
+    endfor
+
+    if len(s) > 0
+      return t.clazz.name . '<'. s[0:-2]. '>'
+    endif
+
     return t.clazz.name
   elseif t.tag == 'TEMPLATE'
     let s = t.clazz.value . '<'
@@ -1177,11 +1192,12 @@ fu! java_parser#SetLogLevel(level)
 endfu
 
 fu! java_parser#GetLogLevel()
-  return exists('b:loglevel') ? b:loglevel : 3
+  return exists('b:loglevel') ? b:loglevel : 2
 endfu
 
 fu! java_parser#GetLogContent()
-  return b:log
+  new
+  put =s:log
 endfu
 
 fu! s:Trace(msg)
@@ -1199,7 +1215,7 @@ endfu
 fu! s:Log(level, pos, key, ...)
   if a:level >= java_parser#GetLogLevel()
     echo a:key
-    call add(b:log, a:key)
+    call add(s:log, a:key)
   endif
 endfu
 
@@ -3225,7 +3241,7 @@ fu! s:methodDeclaratorRest_opt(pos, mods, type, name, typarams, isInterface, isV
     for item in split(s, ',')
       let subs = split(substitute(item, s:RE_FORMAL_PARAM2, '\2;\5', ''), ';')
       let param = {'tag': 'VARDEF', 'pos': -1}
-      let param.name = subs[1]
+      let param.name = substitute(subs[1], ' ', '', 'g')
       let param.vartype = substitute(subs[0], ' ', '', 'g')
       let param.m = s:Flags.PARAMETER
       call add(methoddef.params, param)

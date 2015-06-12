@@ -1,5 +1,6 @@
 package kg.ash.javavi;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -15,11 +16,11 @@ public class ClassSearcher {
         Javavi.debug("Search class: " + targetClass);
 
         this.sources = sources;
-        if (Reflection.existed(targetClass) || Reflection.existed("java.lang." + targetClass)) {
+        if (Reflection.exist(targetClass) || Reflection.exist("java.lang." + targetClass)) {
             isReflected = true;
             return true;
         } else {
-            String[] sourcesArray = sources.split(":");
+            String[] sourcesArray = sources.split(File.pathSeparator);
             for (String sourceDir : sourcesArray) {
                 SourceFileFinder finder = new SourceFileFinder(targetClass);
                 try {

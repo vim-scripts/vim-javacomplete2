@@ -16,11 +16,13 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.StringTokenizer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
 
 public class Javavi {
 
-    static final String VERSION	= "2.0.0";
+    static final String VERSION	= "2.1.0";
 
     static final int STRATEGY_ALPHABETIC	= 128;
     static final int STRATEGY_HIERARCHY		= 256;
@@ -76,7 +78,6 @@ public class Javavi {
 
 
     static String sources = "";
-    static String jars = "";
     private static Daemon daemon = null;
 
     public static void main( String[] args ) throws Exception {
@@ -85,6 +86,66 @@ public class Javavi {
         debug(response);
         output(response);
     }
+
+    private static Pattern pattern = Pattern.compile("^(.*?)<(.*)>$");
+    private static List<String> typeArguments = new ArrayList<>();
+
+    private static String parseTarget(String target) {
+        typeArguments.clear();
+
+        Matcher matcher = pattern.matcher(target);
+        if (matcher.find()) {
+            target = matcher.group(1);
+            ClassSearcher seacher = new ClassSearcher();
+            String ta = matcher.group(2);
+            List<String> args = new ArrayList<>();
+            int i = 0;
+            int lbr = 0;
+            int stidx = 0;
+            while (i < ta.length()) {
+                char c = ta.charAt(i);
+                if (c == '<') {
+                    lbr++;
+                } else if (c == '>') {
+                    lbr--;
+                } else if (c == ',' && lbr == 0) {
+                    ta = ta.substring(stidx, i - stidx) + "<_split_>" + ta.substring(i - stidx + 1, ta.length());
+                    stidx = i;
+                }
+
+                i++;
+            }
+
+            for (String arguments : ta.split("<_split_>")) {
+                arguments = arguments.replaceAll("(\\(|\\))", "");
+                String[] argumentVariants = arguments.split("\\|");
+                boolean added = false;
+                for (String arg : argumentVariants) { 
+                    Matcher argMatcher = pattern.matcher(arg);
+                    boolean matchResult = argMatcher.find();
+                    if (matchResult) {
+                        arg = argMatcher.group(1);
+                    }
+                    if (seacher.find(arg.replaceAll("(\\[|\\])", ""), sources)) {
+                        if (matchResult) {
+                            typeArguments.add(String.format("%s<%s>", arg, argMatcher.group(2)));
+                        } else {
+                            typeArguments.add(arg);
+                        }
+                        added = true;
+                        break;
+                    }
+                }
+
+                if (!added) {
+                    typeArguments.add("java.lang.Object");
+                }
+            }
+        }
+
+        return target;
+    }
+
 
     public static String makeResponse(String[] args) {
 
@@ -120,10 +181,6 @@ public class Javavi {
                     sources = args[++i];
                     debug(sources);
                     break;
-                case "-jars": 
-                    jars = args[++i];
-                    debug(jars);
-                    break;
                 case "-d":
                     Javavi.debugMode = true;
                     break;
@@ -133,6 +190,7 @@ public class Javavi {
                     break;
                 default:
                     target += arg;
+                    target = parseTarget(target);
                     break;
             }
         }
@@ -143,7 +201,9 @@ public class Javavi {
         if (command == COMMAND__CLASS_INFO){
             ClassSearcher seacher = new ClassSearcher();
             if (seacher.find(target, sources)) {
-                SourceClass clazz = seacher.getReader().read(target);
+                ClassReader reader = seacher.getReader();
+                reader.setTypeArguments(typeArguments);
+                SourceClass clazz = reader.read(target);
                 if (clazz != null) {
                     result = new OutputBuilder().outputClassInfo(clazz);
                 }
@@ -158,19 +218,19 @@ public class Javavi {
 
         } else if (command == COMMAND__CLASSNAME_PACKAGES) {
             if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(jars, sources).collectPackages(cachedPackages, cachedClassPackages);
+                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
             }
             return new OutputBuilder().outputClassPackages(target);
             
         } else if (command == COMMAND__SIMILAR_CLASSES) {
             if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(jars, sources).collectPackages(cachedPackages, cachedClassPackages);
+                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
             }
             return new OutputBuilder().outputSimilarClasses(target);
 
         } else if (command == COMMAND__PACKAGESLIST) {
             if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(jars, sources).collectPackages(cachedPackages, cachedClassPackages);
+                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
             }
             result = new OutputBuilder().outputPackageInfo(target);
 

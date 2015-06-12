@@ -1,5 +1,5 @@
 " Vim completion script
-" Version:	2.0
+" Version:	2.1
 " Language:	Java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
 " Last Change:	2015-05-22
@@ -9,13 +9,14 @@
 
 " constants							{{{1
 " input context type
-let s:CONTEXT_AFTER_DOT		= 1
-let s:CONTEXT_METHOD_PARAM	= 2
-let s:CONTEXT_IMPORT		= 3
-let s:CONTEXT_IMPORT_STATIC	= 4
-let s:CONTEXT_PACKAGE_DECL	= 6 
-let s:CONTEXT_NEED_TYPE		= 7 
-let s:CONTEXT_OTHER 		= 0
+let s:CONTEXT_AFTER_DOT		    = 1
+let s:CONTEXT_METHOD_PARAM	    = 2
+let s:CONTEXT_IMPORT		    = 3
+let s:CONTEXT_IMPORT_STATIC	    = 4
+let s:CONTEXT_PACKAGE_DECL	    = 6 
+let s:CONTEXT_NEED_TYPE		    = 7 
+let s:CONTEXT_COMPLETE_CLASS	= 8
+let s:CONTEXT_OTHER 		    = 0
 
 
 let s:ARRAY_TYPE_MEMBERS = [
@@ -65,7 +66,8 @@ let s:KEYWORDS		= s:PRIMITIVE_TYPES + s:KEYWORDS_MODS + s:KEYWORDS_TYPE + ['supe
 
 let s:PATH_SEP	= ':'
 let s:FILE_SEP	= '/'
-if has("win32") || has("win64") || has("win16") || has("dos32") || has("dos16")
+let s:IS_WINDOWS = has("win32") || has("win64") || has("win16") || has("dos32") || has("dos16")
+if s:IS_WINDOWS
   let s:PATH_SEP	= ';'
   let s:FILE_SEP	= '\'
 endif
@@ -93,6 +95,7 @@ let s:RE_CASTING	= '^\s*(\(' .s:RE_QUALID. '\))\s*\(' . s:RE_IDENTIFIER . '\)\>'
 
 let s:RE_KEYWORDS	= '\<\%(' . join(s:KEYWORDS, '\|') . '\)\>'
 
+let s:JAVA_HOME = $JAVA_HOME
 
 " local variables						{{{1
 let b:context_type = s:CONTEXT_OTHER
@@ -154,18 +157,6 @@ fu! s:System(cmd, caller)
   return res
 endfu
 
-
-
-fu! javacomplete#GetClassPathSep()
-  return s:PATH_SEP
-endfu
-
-
-augroup javacomplete
-  autocmd!
-  autocmd VimLeave * call javacomplete#TerminateServer()
-augroup END
-
 function! s:PollServer()
   if !pyeval("'bridgeState' not in locals() or not bridgeState")
     return pyeval("bridgeState.poll()")
@@ -174,52 +165,53 @@ function! s:PollServer()
   return 0
 endfunction
 
-function! javacomplete#GetServerPid()
-  if !pyeval("'bridgeState' not in locals() or not bridgeState")
-    let pid = pyeval("bridgeState.pid()")
-    call s:Info(pid)
-  else
-    call s:Info(-1)
-  endif
-endfunction
-
 function! javacomplete#TerminateServer()
   if s:PollServer() != 0
     py bridgeState.terminateServer()
   endif
 endfunction
 
-function! javacomplete#EnableServer()
+function! javacomplete#StartServer()
   if s:PollServer() == 0
     call s:Info("Restart server")
 
     let classpath = s:GetClassPath()
-    let extra = ''
+    let sources = ''
     if exists('g:JavaComplete_SourcesPath')
-      let extra = '-sources "'. s:ExpandAllPaths(g:JavaComplete_SourcesPath). '" '
-    endif
-    if exists('g:JavaComplete_LibsPath')
-      let extra = extra. '-jars "'. s:ExpandAllPaths(g:JavaComplete_LibsPath). s:PATH_SEP. classpath. '" '
+      let sources = '-sources "'. s:ExpandAllPaths(g:JavaComplete_SourcesPath). '" '
     endif
 
-    let args = ' -classpath "'. classpath. '" '. ' kg.ash.javavi.Javavi '. extra. '-D'
+    let args = ' kg.ash.javavi.Javavi '. sources. '-D'
+    call s:Info("Classpath: ". classpath)
 
     let file = g:JavaComplete_Home. "/autoload/javavibridge.py"
     execute "pyfile ". file
 
     py import vim
     py bridgeState = JavaviBridge()
-    py bridgeState.setupServer(vim.eval('javacomplete#GetJVMLauncher()'), vim.eval('args'))
+    py bridgeState.setupServer(vim.eval('javacomplete#GetJVMLauncher()'), vim.eval('args'), vim.eval('classpath'))
 
+  endif
+endfunction
+
+function! javacomplete#ShowPort()
+  if s:PollServer()
+    let port = pyeval("bridgeState.port()")
+    echom "Javavi port: ". port
+  endif
+endfunction
+
+function! javacomplete#ShowPID()
+  if s:PollServer()
+    let pid = pyeval("bridgeState.pid()")
+    echom "Javavi pid: ". pid
   endif
 endfunction
 
 function! GetClassNameWithScope()
   let curline = getline('.')
   let word_l = col('.') - 1
-  let word_r = col('.') - 1
-  call s:Info(word_r)
-  call s:Info(word_l)
+  let word_r = col('.') - 2
   while curline[word_l - 1] =~ '[.A-Za-z0-9_]'
     let word_l -= 1
   endwhile
@@ -227,7 +219,7 @@ function! GetClassNameWithScope()
     let word_r += 1
   endwhile
 
-  return curline[word_l : word_r + 1]
+  return curline[word_l : word_r]
 endfunction
 
 function! s:AddImport(import)
@@ -262,7 +254,6 @@ function! s:AddImport(import)
     call append(insertline, 'import '. a:import. ';')
     call append(insertline, '')
   else
-    call s:Info(imports)
     let idx = 0
     while idx < len(imports)
       let i = imports[idx][0]
@@ -279,12 +270,11 @@ function! s:AddImport(import)
 endfunction
 
 function! javacomplete#AddImport()
-  call javacomplete#EnableServer()
+  call javacomplete#StartServer()
 
   let classname = expand('<cword>')
   let response = s:RunReflection("-class-packages", classname, 'Filter packages to add import')
   if response =~ '^['
-    call s:Info(response)
     let result = eval(response)
     if len(result) == 0
       echo "JavaComplete: classname '". classname. "' not found in any scope."
@@ -325,7 +315,6 @@ endfunction
 
 " This function is used for the 'omnifunc' option.		{{{1
 function! javacomplete#Complete(findstart, base)
-  call s:Info("fs: ". a:findstart)
   if a:findstart
     " reset enviroment
     let b:dotexpr = ''
@@ -338,7 +327,6 @@ function! javacomplete#Complete(findstart, base)
 
     " *********
     let classScope = GetClassNameWithScope()
-
     if classScope =~ '^[A-Z][A-Za-z0-9_]*$'
       let curline = getline(".")
       let start = col('.') - 1
@@ -346,6 +334,8 @@ function! javacomplete#Complete(findstart, base)
       while start > 0 && curline[start - 1] =~ '[A-Za-z0-9_]'
         let start -= 1
       endwhile
+
+      let b:context_type = s:CONTEXT_COMPLETE_CLASS
 
       return start
     endif
@@ -454,12 +444,12 @@ function! javacomplete#Complete(findstart, base)
     return -1
   endif
 
-  call javacomplete#EnableServer()
+  call javacomplete#StartServer()
 
   let result = []
 
   " Try to complete incomplete class name
-  if a:base =~ '^[A-Z][A-Za-z0-9_]*$'
+  if b:context_type == s:CONTEXT_COMPLETE_CLASS && a:base =~ '^[A-Z][A-Za-z0-9_]*$'
     let response = s:RunReflection("-similar-classes", a:base, 'Filter packages by incomplete class name')
     if response =~ '^['
       let result = eval(response)
@@ -526,7 +516,7 @@ function! javacomplete#Complete(findstart, base)
     return result
   endif
 
-  if strlen(b:errormsg) > 0
+  if len(b:errormsg) > 0
     echoerr 'javacomplete error: ' . b:errormsg
     let b:errormsg = ''
   endif
@@ -746,7 +736,6 @@ function! s:CompleteAfterDot(expr)
 
       " method invocation:	"method().|"	- "this.method().|"
     elseif items[0] =~ '^\s*' . s:RE_IDENTIFIER . '\s*('
-      call s:Info(items)
       let ti = s:MethodInvocation(items[0], ti, itemkind)
 
       " array type, return `class`: "int[] [].|", "java.lang.String[].|", "NestedClass[].|"
@@ -786,6 +775,9 @@ function! s:CompleteAfterDot(expr)
       let subs = split(substitute(items[0], s:RE_ARRAY_ACCESS, '\1;\2', ''), ';')
       if get(subs, 1, '') !~ s:RE_BRACKETS
         let typename = s:GetDeclaredClassName(subs[0])
+        if type(typename) == type([])
+          let typename = typename[0]
+        endif
         call s:Info('ArrayAccess. "' .items[0]. '.|"  typename: "' . typename . '"')
         if (typename != '')
           let ti = s:ArrayAccess(typename, items[0])
@@ -816,6 +808,7 @@ function! s:CompleteAfterDot(expr)
       " package members
       if itemkind/10 == 2 && empty(brackets) && !s:IsKeyword(ident)
         let qn = join(items[:ii], '.')
+        call s:Info("package members: ". qn)
         if type(ti) == type([])
           let idx = s:Index(ti, ident, 'word')
           if idx >= 0
@@ -838,6 +831,7 @@ function! s:CompleteAfterDot(expr)
         " type members
       elseif itemkind/10 == 1 && empty(brackets)
         if ident ==# 'class' || ident ==# 'this' || ident ==# 'super'
+          call s:Info("type members: ". ident)
           let ti = s:DoGetClassInfo(ident == 'class' ? 'java.lang.Class' : join(items[:ii-1], '.'))
           let itemkind = ident ==# 'this' ? 1 : ident ==# 'super' ? 2 : 0
           let ii += 1
@@ -848,6 +842,7 @@ function! s:CompleteAfterDot(expr)
           "let idx = s:Index(get(ti, 'fields', []), ident, 'n')
           "if idx >= 0 && s:IsStatic(ti.fields[idx].m)
           "  let ti = s:ArrayAccess(ti.fields[idx].t, items[ii])
+          call s:Info("static fields: ". ident)
           let members = s:SearchMember(ti, ident, 1, itemkind, 1, 0)
           if !empty(members[2])
             let ti = s:ArrayAccess(members[2][0].t, items[ii])
@@ -869,6 +864,7 @@ function! s:CompleteAfterDot(expr)
         " instance members
       elseif itemkind/10 == 0 && !s:IsKeyword(ident)
         if type(ti) == type({}) && get(ti, 'tag', '') == 'CLASSDEF'
+          call s:Info("instance members")
           "let idx = s:Index(get(ti, 'fields', []), ident, 'n')
           "if idx >= 0
           "  let ti = s:ArrayAccess(ti.fields[idx].t, items[ii])
@@ -938,11 +934,13 @@ fu! s:ArrayAccess(arraytype, expr)
   if a:expr =~ s:RE_BRACKETS	| return {} | endif
   let typename = a:arraytype
 
+  call s:Info("array access: ". typename)
+
   let dims = 0
   if typename[0] == '[' || typename[-1:] == ']' || a:expr[-1:] == ']'
     let dims = s:CountDims(a:expr) - s:CountDims(typename)
     if dims == 0
-      let typename = matchstr(typename, s:RE_IDENTIFIER)
+      let typename = typename[0 : stridx(typename, '[') - 1]
     elseif dims < 0
       return s:ARRAY_TYPE_INFO
     else
@@ -1135,6 +1133,9 @@ fu! s:ProcessParentheses(expr, ...)
     let e = s:GetMatchedIndexEx(a:expr, s-1, '(', ')')
     if e >= 0
       let tail = strpart(a:expr, e+1)
+      if tail[-1:] == '.'
+        return [tail[0:-2]]
+      endif
       if tail =~ '^\s*[\=$'
         return s:ProcessParentheses(strpart(a:expr, s, e-s), 1)
       elseif tail =~ '^\s*\w'
@@ -1189,7 +1190,7 @@ function! s:GenerateImports()
 
   if &ft == 'jsp'
     while 1
-      let lnum = search('\<import\s*=[''"]', 'W')
+      let lnum = search('\<import\s*=[''"]', 'Wc')
       if (lnum == 0)
         break
       endif
@@ -1204,7 +1205,7 @@ function! s:GenerateImports()
     endwhile
   else
     while 1
-      let lnum = search('\<import\>', 'W')
+      let lnum = search('\<import\>', 'Wc')
       if (lnum == 0)
         break
       elseif !s:InComment(line("."), col(".")-1)
@@ -1513,54 +1514,12 @@ fu! s:SearchForName(name, first, fullmatch)
     return result
   endif
 
-  " Fast backward search for type declaration
-  let pos = line('.')
-  let clbracket = 0
-  let quoteFlag = 0
-  while pos > 0
-    let pos -= 1
-    let line = getline(pos)
-    let cursor = len(line)
-    while cursor > 0
-      if line[cursor] == '"'
-        if quoteFlag == 0
-          let quoteFlag = 1
-        else
-          let quoteFlag = 0
-        endif
-      endif
-
-      if quoteFlag
-        let l = strpart(line, 0, cursor)
-        let line = l. strpart(line, cursor + 1, strlen(line) - cursor - 1)
-        let cursor -= 1
-        continue
-      endif
-
-      if line[cursor] == '}'
-        let clbracket += 1
-      elseif line[cursor] == '{' && clbracket > 0
-        let clbracket -= 1
-      endif
-      let cursor -= 1
-    endwhile
-    if clbracket > 0
-      continue
-    endif
-
-    let matches = matchlist(line, '\C.*\(\<'. s:RE_IDENTIFIER. '\>\)\s\+\<'. a:name. '\>.*')
-    if len(matches) > 1
-      return [[],[],[{'tag': 'VARDEF', 'name': a:name, 'vartype': matches[1], 'm': '1000000000000000000000000000000000', 'pos': -1}],[]]
-    endif
-  endwhile
-
   " use java_parser.vim
   if javacomplete#GetSearchdeclMethod() == 4
     " declared in current file
     let unit = javacomplete#parse()
     let targetPos = java_parser#MakePos(line('.')-1, col('.')-1)
     let trees = s:SearchNameInAST(unit, a:name, targetPos, a:fullmatch)
-    call s:Info(trees)
     for tree in trees
       if tree.tag == 'VARDEF'
 	call add(result[2], tree)
@@ -1587,7 +1546,7 @@ fu! s:SearchForName(name, first, fullmatch)
     let result[1] += si[1]
     let result[2] += si[2]
   endif
-  call s:Info(result[1])
+
   return result
 endfu
 
@@ -1918,7 +1877,7 @@ fu! javacomplete#DelSourcePath(s)
 endfu
 
 fu! javacomplete#SetSourcePath(s)
-  let paths = type(a:s) == type([]) ? a:s : split(a:s, javacomplete#GetClassPathSep())
+  let paths = type(a:s) == type([]) ? a:s : split(a:s, s:PATH_SEP)
   let s:sourcepath = []
   for path in paths
     if isdirectory(path)
@@ -1958,14 +1917,14 @@ fu! s:GetSourceDirs(filepath, ...)
 endfu
 
 fu! javacomplete#GetClassPath()
-  return exists('s:classpath') ? join(s:classpath, javacomplete#GetClassPathSep()) : ''
+  return exists('s:classpath') ? join(s:classpath, s:PATH_SEP) : ''
 endfu
 
 " s:GetClassPath()							{{{2
 fu! s:GetClassPath()
   let jars = s:GetExtraPath()
-  let path = s:GetJavaviClassPath() . javacomplete#GetClassPathSep(). s:GetJavaParserClassPath(). javacomplete#GetClassPathSep()
-  let path = path . join(jars, javacomplete#GetClassPathSep()) . javacomplete#GetClassPathSep()
+  let path = s:GetJavaviClassPath() . s:PATH_SEP. s:GetJavaParserClassPath(). s:PATH_SEP
+  let path = path . join(jars, s:PATH_SEP) . s:PATH_SEP
 
   if &ft == 'jsp'
     let path .= s:GetClassPathOfJsp()
@@ -1987,25 +1946,36 @@ fu! s:GetClassPath()
   endif
 
   if empty($CLASSPATH)
-    let java = javacomplete#GetJVMLauncher()
-    call s:Info(exepath(java))
-    let javaSettings = split(s:System(java. " -XshowSettings", "Get java settings"), '\n')
-    for line in javaSettings
-      if line =~ 'java\.home'
-        let javaHome = split(line, ' = ')
-        return path. javaHome[1]. '/lib'
-      endif
-    endfor
-    
+    if s:JAVA_HOME == ''
+      let java = javacomplete#GetJVMLauncher()
+      call s:Info(exepath(java))
+      let javaSettings = split(s:System(java. " -XshowSettings", "Get java settings"), '\n')
+      for line in javaSettings
+        if line =~ 'java\.home'
+          let s:JAVA_HOME = split(line, ' = ')[1]
+        endif
+      endfor
+    endif
+    return path. s:JAVA_HOME. '/lib'
   endif
 
   return path . $CLASSPATH
 endfu
 
 function! javacomplete#CompileJavavi()
+  call javacomplete#TerminateServer()
+
   let javaviDir = g:JavaComplete_Home. "/libs/javavi/"
+  if isdirectory(javaviDir. "target/classes") 
+    if s:IS_WINDOWS
+      silent exe '!rmdir \s "'. javaviDir. "target/classes"
+    else
+      silent exe '!rm -r '. javaviDir. "target/classes"
+    endif
+  endif
+
   if executable('mvn')
-    exe '!'. 'mvn -f "'. javaviDir. '" compile'
+    exe '!'. 'mvn -f "'. javaviDir. '/pom.xml" compile'
   else
     call mkdir(javaviDir. "target/classes", "p")
     exe '!'. javacomplete#GetCompiler(). ' -d '. javaviDir. 'target/classes -classpath '. javaviDir. 'target/classes:'. g:JavaComplete_Home. '/libs/javaparser.jar: -sourcepath '. javaviDir. 'src/main/java: -g -nowarn -target 1.7 -source 1.7 -encoding UTF-8 '. javaviDir. 'src/main/java/kg/ash/javavi/Javavi.java'
@@ -2020,7 +1990,7 @@ fu! s:GetJavaviClassPath()
     call javacomplete#CompileJavavi()
   endif
 
-  if !empty(globpath(javaviDir. 'target/classes', '**/*.class', 0, 1))
+  if !empty(globpath(javaviDir. 'target/classes', '**/*.class', 1, 1))
     return javaviDir. "target/classes"
   else
     echo "No Javavi library classes found, it means that we couldn't compile it. Do you have JDK7+ installed?"
@@ -2040,9 +2010,7 @@ fu! s:GetClassPathOfJsp()
         let b:classpath_jsp .= s:PATH_SEP . path . '/WEB-INF/classes'
       endif
       if isdirectory(path . '/WEB-INF/lib')
-        let libs = globpath(path . '/WEB-INF/lib', '*.jar')
-        if libs != ''
-          let b:classpath_jsp .= s:PATH_SEP . substitute(libs, "\n", s:PATH_SEP, 'g')
+        let b:classpath_jsp .= s:PATH_SEP . path . '/WEB-INF/lib/*.jar'
         endif
       endif
       return b:classpath_jsp
@@ -2332,8 +2300,12 @@ endfu
 
 call s:SetCurrentFileKey()
 if has("autocmd")
-  autocmd BufEnter *.java call s:SetCurrentFileKey()
-  autocmd FileType java call s:SetCurrentFileKey()
+  augroup javacomplete
+    autocmd!
+    autocmd BufEnter *.java call s:SetCurrentFileKey()
+    autocmd FileType java call s:SetCurrentFileKey()
+    autocmd VimLeave * call javacomplete#TerminateServer()
+  augroup END
 endif
 
 
@@ -2362,14 +2334,13 @@ endfu
 " Function to run Reflection						{{{2
 fu! s:RunReflection(option, args, log)
   if !s:PollServer()
-    call javacomplete#EnableServer()
+    call javacomplete#StartServer()
   endif
 
   if s:PollServer()
     let cmd = a:option. ' "'. a:args. '"'
-    call s:Info("RunReflection: ". cmd)
-    let response = pyeval('bridgeState.send(vim.eval("cmd"))')
-    return response
+    call s:Info("RunReflection: ". cmd. " [". a:log. "]")
+    return pyeval('bridgeState.send(vim.eval("cmd"))')
   endif
 
   return ""
@@ -2377,15 +2348,15 @@ endfu
 
 function! s:ExpandAllPaths(path)
     let result = ''
-    let list = split(a:path, javacomplete#GetClassPathSep())
+    let list = uniq(split(a:path, s:PATH_SEP))
     for l in list
-      let result = result. expand(l) . javacomplete#GetClassPathSep()
+      let result = result. substitute(expand(l), '\\', '/', 'g') . s:PATH_SEP
     endfor
     return result
 endfunction
 
 function! s:GetJavaParserClassPath()
-  let path = g:JavaComplete_JavaParserJar . javacomplete#GetClassPathSep()
+  let path = g:JavaComplete_JavaParserJar . s:PATH_SEP
   if exists('b:classpath') && b:classpath !~ '^\s*$'
     return path . b:classpath
   endif
@@ -2405,7 +2376,7 @@ function! s:GetExtraPath()
   let jars = []
   let extrapath = ''
   if exists('g:JavaComplete_LibsPath')
-    let paths = split(g:JavaComplete_LibsPath, ":")
+    let paths = split(g:JavaComplete_LibsPath, s:PATH_SEP)
     for path in paths
       call extend(jars, s:ExpandPathToJars(path))
     endfor
@@ -2416,11 +2387,11 @@ endfunction
 
 function! s:ExpandPathToJars(path)
   let jars = []
-  let files = globpath(a:path, "*", 0, 1)
+  let files = globpath(a:path, "*", 1, 1)
   for file in files
     let filetype = strpart(file, len(file) - 4)
     if filetype ==? ".jar" || filetype ==? ".zip"
-      call add(jars, ":" . file)
+      call add(jars, s:PATH_SEP . file)
     elseif isdirectory(file)
       call extend(jars, s:ExpandPathToJars(file))
     endif
@@ -2453,10 +2424,12 @@ endfu
 
 " a:1	filepath
 " a:2	package name
-fu! s:DoGetClassInfo(class, ...)
+function! s:DoGetClassInfo(class, ...)
   if has_key(s:cache, a:class)
     return s:cache[a:class]
   endif
+
+  call s:Info("DoGetClassInfo: ". a:class)
 
   " array type:	TypeName[] or '[I' or '[[Ljava.lang.String;'
   if a:class[-1:] == ']' || a:class[0] == '['
@@ -2486,97 +2459,142 @@ fu! s:DoGetClassInfo(class, ...)
       " What will be returned for this?
       " - besides the above, all fields and methods of current class. No ctors.
       return s:Sort(s:Tree2ClassInfo(t))
-      "return s:Sort(s:AddInheritedClassInfo(a:class == 'this' ? s:Tree2ClassInfo(t) : {}, t, 1))
     endif
 
     return {}
   endif
-
-
-  if a:class !~ '^\s*' . s:RE_QUALID . '\s*$' || s:HasKeyword(a:class)
-    return {}
-  endif
-
 
   let typename	= substitute(a:class, '\s', '', 'g')
-  let filekey	= a:0 > 0 ? a:1 : s:GetCurrentFileKey()
-  let packagename = a:0 > 1 ? a:2 : s:GetPackageName()
-  let srcpath	= join(s:GetSourceDirs(a:0 > 0 && a:1 != bufnr('%') ? a:1 : expand('%:p'), packagename), ',')
 
-  let names = split(typename, '\.')
-  " remove the package name if in the same packge
-  if len(names) > 1
-    if packagename == join(names[:-2], '.')
-      let names = names[-1:]
-    endif
+  let typeArguments = ''
+  if a:class =~ s:RE_TYPE_WITH_ARGUMENTS
+    let lbridx = stridx(typename, '<')
+    let typeArguments = typename[lbridx + 1 : -2]
+    let typename = typename[0 : lbridx - 1]
   endif
 
-  " a FQN
-  if len(names) > 1
-    call s:FetchClassInfo(typename)
-    let ci = get(s:cache, typename, {})
-    if get(ci, 'tag', '') == 'CLASSDEF'
-      return s:cache[typename]
-    elseif get(ci, 'tag', '') == 'PACKAGE'
-      return {}
-    endif
+  if typename !~ '^\s*' . s:RE_QUALID . '\s*$' || s:HasKeyword(typename)
+    call s:Info("No qualid")
+    return {}
   endif
 
-  " The standard search order of a simple type name is as follows:
-  " 1. The current type including inherited types.
-  " 2. A nested type of the current type.
-  " 3. Explicitly named imported types (single type import).
-  " 4. Other types declared in the same package. Not only current directory.
-  " 5. Implicitly named imported types (import on demand).
 
-  " 1 & 2.
-  " NOTE: inherited types are treated as normal
-  if filekey == s:GetCurrentFileKey()
-    let simplename = typename[strridx(typename, '.')+1:]
-    if s:FoundClassDeclaration(simplename) != 0
-      call s:Info('A1&2')
-      let ci = s:GetClassInfoFromSource(simplename, '%')
-      " do not cache it
-      if !empty(ci)
-        return ci
-      endif
-    endif
-  else
-    let ci = s:GetClassInfoFromSource(typename, filekey)
-    if !empty(ci)
-      return ci
-    endif
-  endif
+  let filekey	= a:0 > 0 && len(a:1) > 0 ? a:1 : s:GetCurrentFileKey()
+  let packagename = a:0 > 1 && len(a:2) > 0 ? a:2 : s:GetPackageName()
 
-  " 3.
-  " NOTE: PackageName.Ident, TypeName.Ident
-  let fqn = s:SearchSingleTypeImport(typename, s:GetImports('imports_fqn', filekey))
-  if !empty(fqn)
-    call s:Info('A3')
-    call s:FetchClassInfo(fqn)
-    let ti = get(s:cache, fqn, {})
-    if get(ti, 'tag', '') != 'CLASSDEF'
-      " TODO: mark the wrong import declaration.
-    endif
-    return ti
-  endif
+  let typeArgumentsCollected = s:CollectTypeArguments(typeArguments, packagename, filekey)
 
-  " 4 & 5
-  " NOTE: Keeps the fqn of the same package first!!
-  call s:Info('A4&5')
-  let fqns = [empty(packagename) ? typename : packagename . '.' . typename]
-  for p in s:GetImports('imports_star', filekey)
-    call add(fqns, p . typename)
-  endfor
+  let fqns = s:CollectFQNs(typename, packagename, filekey)
   for fqn in fqns
+    let fqn = fqn. typeArgumentsCollected
     call s:FetchClassInfo(fqn)
-    if has_key(s:cache, fqn)
-      return get(s:cache[fqn], 'tag', '') == 'CLASSDEF' ? s:cache[fqn] : {}
+
+    let key = s:KeyInCache(fqn)
+    if !empty(key)
+      return get(s:cache[key], 'tag', '') == 'CLASSDEF' ? s:cache[key] : {}
     endif
   endfor
 
   return {}
 endfu
+
+function! s:CollectTypeArguments(typeArguments, packagename, filekey)
+  let typeArgumentsCollected = ''
+  if !empty(a:typeArguments)
+    let typeArguments = a:typeArguments
+    let i = 0
+    let lbr = 0
+    let stidx = 0
+    while i < len(typeArguments)
+      let c = typeArguments[i]
+      if c == '<'
+        let lbr += 1
+      elseif c == '>'
+        let lbr -= 1
+      endif
+
+      if c == ',' && lbr == 0
+        let typeArguments = typeArguments[stidx : i - 1] . "<_split_>". typeArguments[i + 1 : -1]
+        let stidx = i
+      endif
+      let i += 1
+    endwhile
+    
+    for arg in split(typeArguments, "<_split_>")
+      let argTypeArguments = ''
+      if arg =~ s:RE_TYPE_WITH_ARGUMENTS
+        let lbridx = stridx(arg, '<')
+        let argTypeArguments = arg[lbridx : -1]
+        let arg = arg[0 : lbridx - 1]
+      endif
+
+      let fqns = s:CollectFQNs(arg, a:packagename, a:filekey)
+      let typeArgumentsCollected .= ''
+      if len(fqns) > 1
+        let typeArgumentsCollected .= '('
+      endif
+      for fqn in fqns
+        if len(fqn) > 0
+          let typeArgumentsCollected .= fqn. argTypeArguments. '|'
+        endif
+      endfor
+      if len(fqns) > 1
+        let typeArgumentsCollected = typeArgumentsCollected[0:-2]. '),'
+      else
+        let typeArgumentsCollected = typeArgumentsCollected[0:-2]. ','
+      endif
+    endfor
+    if !empty(typeArgumentsCollected)
+      let typeArgumentsCollected = '<'. typeArgumentsCollected[0:-2]. '>'
+    endif
+  endif
+
+  return typeArgumentsCollected
+endfunction
+
+function! s:KeyInCache(fqn)
+  let fqn = substitute(a:fqn, '<', '\\<', 'g')
+  let fqn = substitute(fqn, '>', '\\>', 'g')
+  let fqn = substitute(fqn, ']', '\\]', 'g')
+  let fqn = substitute(fqn, '[', '\\[', 'g')
+
+  let keys = keys(s:cache)
+  let idx = match(keys, '\v'. fqn. '$')
+  
+  if idx >= 0
+    return keys[idx]
+  endif
+
+  return ''
+endfunction
+
+function! s:CollectFQNs(typename, packagename, filekey)
+  if len(split(a:typename, '\.')) > 1
+    return [a:typename]
+  endif
+
+  let brackets = stridx(a:typename, '[')
+  let extra = ''
+  if brackets >= 0
+    let typename = a:typename[0 : brackets - 1]
+    let extra = a:typename[brackets : -1]
+  else
+    let typename = a:typename
+  endif
+
+  let directFqn = s:SearchSingleTypeImport(typename, s:GetImports('imports_fqn', a:filekey))
+  if !empty(directFqn)
+    return [directFqn. extra]
+  endif
+
+  let fqns = []
+  call add(fqns, empty(a:packagename) ? a:typename : a:packagename . '.' . a:typename)
+  let imports = s:GetImports('imports_star', a:filekey)
+  for p in imports
+    call add(fqns, p . a:typename)
+  endfor
+  return fqns
+endfunction
 
 " Parameters:
 "   class	the qualified class name
@@ -2653,6 +2671,9 @@ fu! s:Tree2ClassInfo(t)
     let i = 0
     while i < len(extends)
       let ci = s:DoGetClassInfo(java_parser#type2Str(extends[i]), filepath, packagename)
+      if type(ci) == type([])
+        let ci = [0]
+      endif
       if has_key(ci, 'fqn')
         let extends[i] = ci.fqn
       endif
@@ -2809,6 +2830,9 @@ fu! s:SearchMember(ci, name, fullmatch, kind, returnAll, memberkind, ...)
   if !has_key(a:ci, 'classpath') || (a:kind == 1 || a:kind == 2)
     for i in get(a:ci, 'extends', [])
       let ci = s:DoGetClassInfo(java_parser#type2Str(i))
+      if type(ci) == type([])
+        let ci = ci[0]
+      endif
       let members = s:SearchMember(ci, a:name, a:fullmatch, a:kind == 1 ? 2 : a:kind, a:returnAll, a:memberkind)
       let result[0] += members[0]
       let result[1] += members[1]
@@ -2824,7 +2848,19 @@ endfu
 fu! s:DoGetFieldList(fields)
   let s = ''
   for field in a:fields
-    let s .= "{'kind':'" . (s:IsStatic(field.m) ? "F" : "f") . "','word':'" . field.n . "','menu':'" . field.t . "','dup':1},"
+    if type(field.t) == type([])
+      let fieldType = field.t[0]
+      let args = ''
+      for arg in field.t[1]
+        let args .= arg. ','
+      endfor
+      if len(args) > 0
+        let fieldType .= '<'. args[0:-2]. '>'
+      endif
+    else
+      let fieldType = field.t
+    endif
+    let s .= "{'kind':'" . (s:IsStatic(field.m) ? "F" : "f") . "','word':'" . field.n . "','menu':'" . fieldType . "','dup':1},"
   endfor
   return s
 endfu
@@ -3001,34 +3037,34 @@ endfu
 
 
 
-let g:JavaComplete_Home = ''
-for path in split(&rtp, ',')
-  if match(path, "vim-javacomplete2$") >= 0
-    let g:JavaComplete_Home = path
-    break
-  endif
-endfor
+let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?/?')
+let g:JavaComplete_JavaParserJar = fnamemodify(g:JavaComplete_Home. "/libs/javaparser.jar", "p")
 
-let g:JavaComplete_JavaParserJar = g:JavaComplete_Home. "/libs/javaparser.jar"
+call s:Info("JavaComplete_Home: ". g:JavaComplete_Home)
 
 if !exists("g:JavaComplete_SourcesPath")
   let g:JavaComplete_SourcesPath = ''
   let sources = globpath(getcwd(), '**/src', 0, 1)
   for src in sources
     if match(src, '.*build.*') < 0
-      let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. src. javacomplete#GetClassPathSep()
+      let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. src. s:PATH_SEP
     endif
   endfor
   call s:Info("Default sources: ". g:JavaComplete_SourcesPath)
 endif
 
 if exists('g:JavaComplete_LibsPath')
-  let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath. javacomplete#GetClassPathSep()
+  let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath. s:PATH_SEP
 else
   let g:JavaComplete_LibsPath = ""
 endif
 
-let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath. "~/.m2/repository". javacomplete#GetClassPathSep(). s:GetClassPath()
+let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath
+if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepositoryDisable
+  let g:JavaComplete_LibsPath .= "~/.m2/repository". s:PATH_SEP
+endif
+let g:JavaComplete_LibsPath .= s:GetClassPath()
+
 " }}}
 "}}}
 " vim:set fdm=marker sw=2 nowrap:

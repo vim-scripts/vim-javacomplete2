@@ -200,7 +200,20 @@ A single letter indicates the kind of compeltion item. These kinds are:
         default plugin will search `src` directory and add it 
         automatically.
 
+    Disable maven repository:
+
+        let g:JavaComplete_MavenRepositoryDisable = 1 
+        By default this option is disabled (0).
+        
+
 2.4 Commands					*javacomplete-commands*
+
+    javacomplete#StartServer()      manually run server.
+    javacomplete#TerminateServer()  manually stop server.
+    javacomplete#AddImport()        insert class import. 
+    javacomplete#ShowPort()         show port used for javavi server.
+    javacomplete#ShowPID()          show javavi server process id.
+    javacomplete#CompileJavavi()    manually run server compilation.
 
 ==============================================================================
 3. Java parser in Vim    			*javacomplete-parser*
@@ -260,6 +273,9 @@ The embedded parser works a bit slower than expected.
 6. History					
 
 6.1 javacomplete				*javacomplete-history*
+
+v2.1
+    2015-06-12  Generics completion. Bug fixes.
 
 v2.0
     2015-05-26  Writed new library for reflection and parsing. Parsing make by
