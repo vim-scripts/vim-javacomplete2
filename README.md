@@ -6,6 +6,10 @@ Updated version of the original [javacomplete plugin](http://www.vim.org/scripts
 
 ![vim-javacomplete2](https://github.com/artur-shaik/vim-javacomplete2/raw/master/doc/demo.gif)
 
+Generics demo
+
+![vim-javacomplete2](https://github.com/artur-shaik/vim-javacomplete2/raw/master/doc/generics_demo.gif)
+
 ## Intro
 
 This is vim-javacomplete2, an omni-completion plugin for [Java](http://www.oracle.com/technetwork/java/javase/downloads/index.html) requiring vim 7.
@@ -19,7 +23,7 @@ For now the main difference from the original plugin is the existence of a serve
 One more issue I had with the original javacomplete plugin is losing my classpath and as a result, completion not working.
 So now the javacomplete2 plugin detects the JRE library path, thus bringing standard java completion out of the box - no configuration required!
 The plugin will scan child directory tree for `src` directory and add it to the sources path (For this, it is nice to have [vim-rooter](https://github.com/airblade/vim-rooter.git) plugin). 
-By default the plugin will look for a maven repository (`~/.m2/repository`).
+By default the plugin will look for a `pom.xml` file, and add libraries you use in path.
 
 For the first run the plugin will compile the Javavi library.
 
@@ -27,7 +31,9 @@ For the first run the plugin will compile the Javavi library.
 
 Features:
 - Server side java reflection class loader and parsing library;
-- Searches class files automatically.
+- Searches class files automatically, using `pom.xml` to append completion classpath;
+- Generics;
+- Lambdas.
 
 Features (originally existed):
 - List members of a class, including (static) fields, (static) methods and ctors;
@@ -44,8 +50,8 @@ Features borrowed and ported to vimscript from vim-javacompleteex:
 
 ## Requirements
 
-- Vim version 7.0 or above, with python support;
-- JDK version 7 or above in classpath.
+- Vim version 7.4 or above with python support;
+- JDK8.
 
 ## Installation
 
@@ -91,11 +97,11 @@ To enable inserting class imports with F4, add:
 
 ### Optional
 
-`g:JavaComplete_LibsPath` - path to additional jar files. This path will always be appended with '~/.m2/repository' directory. Here you can add, for example, your glassfish libs directory or your project libs. It will be automatically append your JRE home path.
+`g:JavaComplete_LibsPath` - path to additional jar files. This path appends with you libraries specified in `pom.xml`. Here you can add, for example, your glassfish libs directory or your project libs. It will be automatically append your JRE home path.
 
 `g:JavaComplete_SourcesPath` - path of additional sources. Don't try to add all sources you have, this will slow down the parsing process. Instead, add your project sources and necessary library sources. If you have compiled classes add them to the previous config (`g:JavaComplete_LibsPath`) instead. By default the plugin will search the `src` directory and add it automatically.
 
-`let g:JavaComplete_MavenRepositoryDisable = 1` - don't append classpath with `~/.m2/repository`. By default is `0`.
+`let g:JavaComplete_MavenRepositoryDisable = 1` - don't append classpath with libraries specified in `pom.xml` of your project. By default is `0`.
 
 ## Commands
 
@@ -132,18 +138,14 @@ manually run server compilation:
 ## Todo
 
 - Add javadoc;
-- Give a hint for class name conflict in different packages;
-- Support parameter information for template;
-- Make it faster and more robust;
-- Lambda support;
+- ~~Lambda support~~;
 - Cross session cache;
 - Most used (classes, methods, vars) at first place (smart suggestions);
 - FXML support;
 - Check for jsp support;
 - Refactoring support?;
 - Class creation helpers;
-- Generics;
-- Clean old unused code;
+- ~~Generics~~;
 - etc...
 
 ## Thanks

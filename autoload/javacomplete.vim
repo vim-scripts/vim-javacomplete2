@@ -1,23 +1,25 @@
 " Vim completion script
-" Version:	2.1
+" Version:	2.2
 " Language:	Java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-05-22
+" Last Change:	2015-07-08
 " Copyright:	Copyright (C) 2006-2015 cheng fang, artur shaik. All rights reserved.
 " License:	Vim License	(see vim's :help license)
 
 
 " constants							{{{1
 " input context type
-let s:CONTEXT_AFTER_DOT		    = 1
-let s:CONTEXT_METHOD_PARAM	    = 2
-let s:CONTEXT_IMPORT		    = 3
-let s:CONTEXT_IMPORT_STATIC	    = 4
-let s:CONTEXT_PACKAGE_DECL	    = 6 
-let s:CONTEXT_NEED_TYPE		    = 7 
-let s:CONTEXT_COMPLETE_CLASS	= 8
-let s:CONTEXT_OTHER 		    = 0
+let s:CONTEXT_AFTER_DOT		     = 1
+let s:CONTEXT_METHOD_PARAM	     = 2
+let s:CONTEXT_IMPORT		     = 3
+let s:CONTEXT_IMPORT_STATIC	     = 4
+let s:CONTEXT_PACKAGE_DECL	     = 6 
+let s:CONTEXT_NEED_TYPE		     = 7 
+let s:CONTEXT_COMPLETE_CLASS	 = 8
+let s:CONTEXT_METHOD_REFERENCE   = 9
+let s:CONTEXT_OTHER 		     = 0
 
+let s:MODIFIER_ABSTRACT         = '10000000001'
 
 let s:ARRAY_TYPE_MEMBERS = [
       \	{'kind': 'm',		'word': 'clone(',	'abbr': 'clone()',	'menu': 'Object clone()', },
@@ -80,6 +82,7 @@ let s:RE_REFERENCE_TYPE	= s:RE_QUALID . s:RE_BRACKETS . '*'
 let s:RE_TYPE		= s:RE_REFERENCE_TYPE
 
 let s:RE_TYPE_ARGUMENT	= '\%(?\s\+\%(extends\|super\)\s\+\)\=' . s:RE_TYPE
+let s:RE_TYPE_ARGUMENT_EXTENDS	= '\%(?\s\+\%(extends\|super\)\s\+\)' . s:RE_TYPE
 let s:RE_TYPE_ARGUMENTS	= '<' . s:RE_TYPE_ARGUMENT . '\%(\s*,\s*' . s:RE_TYPE_ARGUMENT . '\)*>'
 let s:RE_TYPE_WITH_ARGUMENTS_I	= s:RE_IDENTIFIER . '\s*' . s:RE_TYPE_ARGUMENTS
 let s:RE_TYPE_WITH_ARGUMENTS	= s:RE_TYPE_WITH_ARGUMENTS_I . '\%(\s*' . s:RE_TYPE_WITH_ARGUMENTS_I . '\)*'
@@ -149,6 +152,10 @@ fu! s:Log(level, key, ...)
   endif
 endfu
 
+fu! SScope()
+  return s:
+endfu
+
 fu! s:System(cmd, caller)
   call s:WatchVariant(a:cmd)
   let t = reltime()
@@ -208,7 +215,7 @@ function! javacomplete#ShowPID()
   endif
 endfunction
 
-function! GetClassNameWithScope()
+function! s:GetClassNameWithScope()
   let curline = getline('.')
   let word_l = col('.') - 1
   let word_r = col('.') - 2
@@ -322,12 +329,14 @@ function! javacomplete#Complete(findstart, base)
     let b:context_type = s:CONTEXT_OTHER
 
     let statement = s:GetStatement()
-    call s:WatchVariant('statement: "' . statement . '"')
 
+    let s:et_whole = reltime()
+    let start = col('.') - 1
 
-    " *********
-    let classScope = GetClassNameWithScope()
+    let classScope = s:GetClassNameWithScope()
     if classScope =~ '^[A-Z][A-Za-z0-9_]*$'
+      let b:context_type = s:CONTEXT_COMPLETE_CLASS
+
       let curline = getline(".")
       let start = col('.') - 1
 
@@ -335,21 +344,12 @@ function! javacomplete#Complete(findstart, base)
         let start -= 1
       endwhile
 
-      let b:context_type = s:CONTEXT_COMPLETE_CLASS
-
       return start
-    endif
-    " *********
 
-
-    let s:et_whole = reltime()
-    let start = col('.') - 1
-    " let s:log = []
-
-    if statement =~ '[.0-9A-Za-z_]\s*$'
+    elseif statement =~ '[.0-9A-Za-z_]\s*$'
       let valid = 1
       if statement =~ '\.\s*$'
-        let valid = statement =~ '[")0-9A-Za-z_\]]\s*\.\s*$' && statement !~ '\<\H\w\+\.\s*$' && statement !~ '\<\(abstract\|assert\|break\|case\|catch\|const\|continue\|default\|do\|else\|enum\|extends\|final\|finally\|for\|goto\|if\|implements\|import\|instanceof\|interface\|native\|new\|package\|private\|protected\|public\|return\|static\|strictfp\|switch\|synchronized\|throw\|throws\|transient\|try\|volatile\|while\|true\|false\|null\)\.\s*$'
+        let valid = statement =~ '[")0-9A-Za-z_\]]\s*\.\s*$' && statement !~ '\<\H\w\+\.\s*$' && statement !~ '\C\<\(abstract\|assert\|break\|case\|catch\|const\|continue\|default\|do\|else\|enum\|extends\|final\|finally\|for\|goto\|if\|implements\|import\|instanceof\|interface\|native\|new\|package\|private\|protected\|public\|return\|static\|strictfp\|switch\|synchronized\|throw\|throws\|transient\|try\|volatile\|while\|true\|false\|null\)\.\s*$'
       endif
       if !valid
         return -1
@@ -375,7 +375,7 @@ function! javacomplete#Complete(findstart, base)
         return start - strlen(b:incomplete)
 
       else
-        " type declaration		NOTE: not supported generic yet.
+        " type declaration
         let idx_type = matchend(statement, '^\s*' . s:RE_TYPE_DECL)
         if idx_type != -1
           let b:dotexpr = strpart(statement, idx_type)
@@ -439,6 +439,11 @@ function! javacomplete#Complete(findstart, base)
           return start - strlen(b:incomplete)
         endif
       endif
+
+    elseif statement =~ '[.0-9A-Za-z_\<\>]*::$'
+      let b:context_type = s:CONTEXT_METHOD_REFERENCE
+      let b:dotexpr = s:ExtractCleanExpr(statement)
+      return start - strlen(b:incomplete)
     endif
 
     return -1
@@ -467,7 +472,7 @@ function! javacomplete#Complete(findstart, base)
   endif
 
   if b:dotexpr !~ '^\s*$'
-    if b:context_type == s:CONTEXT_AFTER_DOT
+    if b:context_type == s:CONTEXT_AFTER_DOT || b:context_type == s:CONTEXT_METHOD_REFERENCE
       let result = s:CompleteAfterDot(b:dotexpr)
     elseif b:context_type == s:CONTEXT_IMPORT || b:context_type == s:CONTEXT_IMPORT_STATIC || b:context_type == s:CONTEXT_PACKAGE_DECL || b:context_type == s:CONTEXT_NEED_TYPE
       let result = s:GetMembers(b:dotexpr[:-2])
@@ -621,8 +626,8 @@ function! s:CompleteAfterDot(expr)
 
 
   " 0. String literal
-  call s:Info('P1. "str".|')
   if items[-1] =~  '"$'
+    call s:Info('P1. "str".|')
     return s:GetMemberList("java.lang.String")
   endif
 
@@ -915,10 +920,6 @@ fu! s:MethodInvocation(expr, ti, itemkind)
     let methods = s:SearchForName(subs[0], 0, 1)[1]
   elseif type(a:ti) == type({}) && get(a:ti, 'tag', '') == 'CLASSDEF'
     let methods = s:SearchMember(a:ti, subs[0], 1, a:itemkind, 1, 0, a:itemkind == 2)[1]
-    "    let methods = s:filter(get(a:ti, 'methods', []), 'item.n == "' . subs[0] . '"')
-    "    if a:itemkind == 1 || a:itemkind == 2
-    "      let methods += s:filter(get(a:ti, 'declared_methods', []), 'item.n == "' . subs[0] . '"')
-    "    endif
   else
     let methods = []
   endif
@@ -1054,7 +1055,7 @@ fu! s:MergeLines(lnum, col, lnum_old, col_old)
   let str = s:RemoveBlockComments(str)
   " generic in JAVA 5+
   while match(str, s:RE_TYPE_ARGUMENTS) != -1
-    let str = substitute(str, '\(' . s:RE_TYPE_ARGUMENTS . '\)', '\=repeat(" ", len(submatch(1)))', 'g')
+    let str = substitute(str, '\(' . s:RE_TYPE_ARGUMENTS . '\)', '\=repeat("", len(submatch(1)))', 'g')
   endwhile
   let str = substitute(str, '\s\s\+', ' ', 'g')
   let str = substitute(str, '\([.()]\)[ \t]\+', '\1', 'g')
@@ -1068,7 +1069,7 @@ fu! s:ExtractCleanExpr(expr)
   let cmd = substitute(cmd, '\([.()[\]]\)[ \t\r\n]\+', '\1', 'g')
 
   let pos = strlen(cmd)-1 
-  while pos >= 0 && cmd[pos] =~ '[a-zA-Z0-9_.)\]]'
+  while pos >= 0 && cmd[pos] =~ '[a-zA-Z0-9_.)\]:<>"]'
     if cmd[pos] == ')'
       let pos = s:SearchPairBackward(cmd, pos, '(', ')')
     elseif cmd[pos] == ']'
@@ -1089,15 +1090,19 @@ fu! s:ParseExpr(expr)
   " recognize ClassInstanceCreationExpr as a whole
   let e = matchend(a:expr, '^\s*new\s\+' . s:RE_QUALID . '\s*[([]')-1
   if e < 0
-    let e = match(a:expr, '[.([]')
+    let e = match(a:expr, '[.([:]')
   endif
   let isparen = 0
   while e >= 0
-    if a:expr[e] == '.'
+    if a:expr[e] == '.' || a:expr[e] == ':'
       let subexpr = strpart(a:expr, s, e-s)
       call extend(items, isparen ? s:ProcessParentheses(subexpr) : [subexpr])
       let isparen = 0
-      let s = e + 1
+      if a:expr[e] == ':' && a:expr[e+1] == ':'
+        let s = e + 2
+      else
+        let s = e + 1
+      endif
     elseif a:expr[e] == '('
       let e = s:GetMatchedIndexEx(a:expr, e, '(', ')')
       let isparen = 1
@@ -1116,7 +1121,7 @@ fu! s:ParseExpr(expr)
         continue
       endif
     endif
-    let e = match(a:expr, '[.([]', s)
+    let e = match(a:expr, '[.([:]', s)
   endwhile
   let tail = strpart(a:expr, s)
   if tail !~ '^\s*$'
@@ -1304,9 +1309,6 @@ fu! s:SearchStaticImports(name, fullmatch)
       let members = s:SearchMember(ti, a:name, a:fullmatch, 12, 1, 0)
       let result[1] += members[1]
       let result[2] += members[2]
-      "let pattern = 'item.n ' . (a:fullmatch ? '==# ''' : '=~# ''^') . a:name . ''' && s:IsStatic(item.m)'
-      "let result[1] += s:filter(get(ti, 'methods', []), pattern)
-      "let result[2]  += s:filter(get(ti, 'fields', []),  pattern)
     else
       " TODO: mark the wrong import declaration.
     endif
@@ -1329,17 +1331,6 @@ function! s:GetVariableDeclaration()
   if (lnum == lnum_old && col == col_old)
     return ''
   endif
-
-  "  silent call search('[;){]')
-  "  let lnum_end = line('.')
-  "  let col_end  = col('.')
-  "  let declaration = ''
-  "  while (lnum <= lnum_end)
-  "    let declaration = declaration . getline(lnum)
-  "    let lnum = lnum + 1
-  "  endwhile
-  "  let declaration = strpart(declaration, col-1)
-  "  let declaration = substitute(declaration, '\.[ \t]\+', '.', 'g')
 
   silent call cursor(lnum_old, col_old)
   return s:MergeLines(lnum, col, lnum_old, col_old)
@@ -1522,11 +1513,16 @@ fu! s:SearchForName(name, first, fullmatch)
     let trees = s:SearchNameInAST(unit, a:name, targetPos, a:fullmatch)
     for tree in trees
       if tree.tag == 'VARDEF'
-	call add(result[2], tree)
+        call add(result[2], tree)
       elseif tree.tag == 'METHODDEF'
-	call add(result[1], tree)
+        call add(result[1], tree)
       elseif tree.tag == 'CLASSDEF'
-	call add(result[0], tree.name)
+        call add(result[0], tree.name)
+      elseif tree.tag == 'LAMBDA'
+        let t = s:DetermineLambdaArguments(unit, tree, a:name)
+        if !empty(t)
+          call add(result[2], t)
+        endif
       endif
     endfor
 
@@ -1548,6 +1544,114 @@ fu! s:SearchForName(name, first, fullmatch)
   endif
 
   return result
+endfu
+
+fu! s:DetermineLambdaArguments(unit, ti, name)
+  let nameInLambda = 0
+  let argIdx = 0 " argument index in methods arguments declaration
+  let argPos = 0
+  if type(a:ti.args) == type({})
+    if a:name == a:ti.args.name
+      let nameInLambda = 1
+    endif
+  elseif type(a:ti.args) == type([])
+    for arg in a:ti.args
+      if arg.name == a:name
+        let nameInLambda = 1
+        let argPos = arg.pos
+        break
+      endif
+      let argIdx += 1
+    endfor
+  endif
+
+  if !nameInLambda
+    return {}
+  endif
+
+  let t = a:ti
+  let type = ''
+  if has_key(t, 'meth') && !empty(t.meth)
+    let result = []
+    while 1
+      if has_key(t, 'meth')
+        let t = t.meth
+      elseif t.tag == 'SELECT' && has_key(t, 'selected')
+        call add(result, t.name. '()')
+        let t = t.selected
+      elseif t.tag == 'IDENT'
+        call add(result, t.name)
+        break
+      endif
+    endwhile
+
+    let items = reverse(result)
+    let typename = s:GetDeclaredClassName(items[0])
+    let ti = {}
+    if (typename != '')
+      if typename[1] == '[' || typename[-1:] == ']'
+        let ti = s:ARRAY_TYPE_INFO
+      elseif typename != 'void' && !s:IsBuiltinType(typename)
+        let ti = s:DoGetClassInfo(typename)
+      endif
+    endif
+
+    let ii = 1
+    while !empty(ti) && ii < len(items) - 1
+      " method invocation:	"PrimaryExpr.method(parameters)[].|"
+      if items[ii] =~ '^\s*' . s:RE_IDENTIFIER . '\s*('
+        let ti = s:MethodInvocation(items[ii], ti, 0)
+      endif
+      let ii += 1
+    endwhile
+
+    if has_key(ti, 'methods')
+      let method = {}
+      for m in ti.methods
+        if m.n == split(items[-1], '(')[0]
+          let method = m
+        endif
+      endfor
+
+      if a:ti.idx < len(method.p)
+        let type = method.p[a:ti.idx]
+      endif
+    endif
+  elseif has_key(t, 'stats') && !empty(t.stats)
+    if t.stats.tag == 'VARDEF'
+      let type = t.stats.t
+    elseif t.stats.tag == 'RETURN'
+      for ty in a:unit.types
+        for def in ty.defs
+          if def.tag == 'METHODDEF'
+            if t.stats.pos >= def.body.pos && t.stats.endpos <= def.body.endpos
+              let type = def.r
+            endif
+          endif
+        endfor
+      endfor
+
+    endif
+  endif
+
+  " type should be FunctionInterface, and it contains only one abstract method
+  if !empty(type)
+    let functionalMembers = s:DoGetClassInfo(type)
+    if has_key(functionalMembers, 'methods')
+      for m in functionalMembers.methods
+        if m.m == s:MODIFIER_ABSTRACT
+          if argIdx < len(m.p)
+            let type = m.p[argIdx]
+            break
+          endif
+        endif
+      endfor
+
+      return {'tag': 'VARDEF', 'name': a:name, 'type': {'tag': 'IDENT', 'name': type}, 'vartype': {'tag': 'IDENT', 'name': type, 'pos': argPos}, 'pos': argPos}
+    endif
+  endif
+
+  return {}
 endfu
 
 " TODO: how to determine overloaded functions
@@ -1631,7 +1735,7 @@ fu! javacomplete#parse(...)
 
   if changed
     call java_parser#InitParser(lines)
-    call java_parser#SetLogLevel(5)
+    call java_parser#SetLogLevel(2)
     let props.unit = java_parser#compilationUnit()
 
     let package = has_key(props.unit, 'package') ? props.unit.package . '.' : ''
@@ -1659,34 +1763,51 @@ fu! s:UpdateFQN(tree, qn)
 endfu
 
 " TreeVisitor						{{{2
-fu! s:visitTree(tree, param) dict
+" parent argument exist for lambdas only
+fu! s:visitTree(tree, param, parent) dict
   if type(a:tree) == type({})
     exe get(self, get(a:tree, 'tag', ''), '')
   elseif type(a:tree) == type([])
     for tree in a:tree
-      call self.visit(tree, a:param)
+      call self.visit(tree, a:param, a:parent)
     endfor
   endif
 endfu
 
+" we need to return to parent leafs to get lambda's arguments declaration
+fu! s:lambdaMeth(tree)
+  if a:tree.tag == 'APPLY'
+    return {'meth': a:tree.meth, 'stats': {}}
+  elseif a:tree.tag == 'VARDEF'
+    return {'stats': {'tag': a:tree.tag, 't': a:tree.t, 'name': a:tree.name, 'endpos': a:tree.endpos, 'n': a:tree.n, 'pos': a:tree.pos, 'm': a:tree.m}, 'meth': {}}
+  elseif a:tree.tag == 'RETURN'
+    return {'stats': {'tag': a:tree.tag, 'endpos': a:tree.endpos, 'pos': a:tree.pos}, 'meth': {}}
+  endif
+  return {'meth': {}, 'stats': {}}
+endfu
+
 let s:TreeVisitor = {'visit': function('s:visitTree'),
-      \ 'TOPLEVEL'	: 'call self.visit(a:tree.types, a:param)',
-      \ 'BLOCK'	: 'let stats = a:tree.stats | if stats == [] | call java_parser#GotoPosition(a:tree.pos) | let stats = java_parser#block().stats | endif | call self.visit(stats, a:param)',
-      \ 'DOLOOP'	: 'call self.visit(a:tree.body, a:param) | call self.visit(a:tree.cond, a:param)',
-      \ 'WHILELOOP'	: 'call self.visit(a:tree.cond, a:param) | call self.visit(a:tree.body, a:param)',
-      \ 'FORLOOP'	: 'call self.visit(a:tree.init, a:param) | call self.visit(a:tree.cond, a:param) | call self.visit(a:tree.step, a:param) | call self.visit(a:tree.body, a:param)',
-      \ 'FOREACHLOOP'	: 'call self.visit(a:tree.var, a:param)  | call self.visit(a:tree.expr, a:param) | call self.visit(a:tree.body, a:param)',
-      \ 'LABELLED'	: 'call self.visit(a:tree.body, a:param)',
-      \ 'SWITCH'	: 'call self.visit(a:tree.selector, a:param) | call self.visit(a:tree.cases, a:param)',
-      \ 'CASE'	: 'call self.visit(a:tree.pat,  a:param) | call self.visit(a:tree.stats, a:param)',
-      \ 'SYNCHRONIZED': 'call self.visit(a:tree.lock, a:param) | call self.visit(a:tree.body, a:param)',
-      \ 'TRY'		: 'call self.visit(a:tree.body, a:param) | call self.visit(a:tree.catchers, a:param) | call self.visit(a:tree.finalizer, a:param) ',
-      \ 'CATCH'	: 'call self.visit(a:tree.param,a:param) | call self.visit(a:tree.body, a:param)',
-      \ 'CONDEXPR'	: 'call self.visit(a:tree.cond, a:param) | call self.visit(a:tree.truepart, a:param) | call self.visit(a:tree.falsepart, a:param)',
-      \ 'IF'		: 'call self.visit(a:tree.cond, a:param) | call self.visit(a:tree.thenpart, a:param) | if has_key(a:tree, "elsepart") | call self.visit(a:tree.elsepart, a:param) | endif',
-      \ 'EXEC'	: 'call self.visit(a:tree.expr, a:param)',
-      \ 'APPLY'	: 'call self.visit(a:tree.meth, a:param) | call self.visit(a:tree.args, a:param)',
-      \ 'NEWCLASS'	: 'call self.visit(a:tree.def, a:param)'
+      \ 'lambdameth': function('s:lambdaMeth'),
+      \ 'TOPLEVEL'	: 'call self.visit(a:tree.types, a:param, a:tree)',
+      \ 'BLOCK'	: 'let stats = a:tree.stats | if stats == [] | call java_parser#GotoPosition(a:tree.pos) | let stats = java_parser#block().stats | endif | call self.visit(stats, a:param, a:tree)',
+      \ 'DOLOOP'	: 'call self.visit(a:tree.body, a:param, a:tree) | call self.visit(a:tree.cond, a:param, a:tree)',
+      \ 'WHILELOOP'	: 'call self.visit(a:tree.cond, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'FORLOOP'	: 'call self.visit(a:tree.init, a:param, a:tree) | call self.visit(a:tree.cond, a:param, a:tree) | call self.visit(a:tree.step, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'FOREACHLOOP'	: 'call self.visit(a:tree.var, a:param, a:tree)  | call self.visit(a:tree.expr, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'LABELLED'	: 'call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'SWITCH'	: 'call self.visit(a:tree.selector, a:param, a:tree) | call self.visit(a:tree.cases, a:param, a:tree)',
+      \ 'CASE'	: 'call self.visit(a:tree.pat,  a:param, a:tree) | call self.visit(a:tree.stats, a:param, a:tree)',
+      \ 'SYNCHRONIZED': 'call self.visit(a:tree.lock, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'TRY'		: 'call self.visit(a:tree.params, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree) | call self.visit(a:tree.catchers, a:param, a:tree) | call self.visit(a:tree.finalizer, a:param, a:tree) ',
+      \ 'RARROW'		: 'call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'CATCH'	: 'call self.visit(a:tree.param,a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)',
+      \ 'CONDEXPR'	: 'call self.visit(a:tree.cond, a:param, a:tree) | call self.visit(a:tree.truepart, a:param, a:tree) | call self.visit(a:tree.falsepart, a:param, a:tree)',
+      \ 'IF'		: 'call self.visit(a:tree.cond, a:param, a:tree) | call self.visit(a:tree.thenpart, a:param, a:tree) | if has_key(a:tree, "elsepart") | call self.visit(a:tree.elsepart, a:param, a:tree) | endif',
+      \ 'EXEC'	: 'call self.visit(a:tree.expr, a:param, a:tree)',
+      \ 'APPLY'	: 'call self.visit(a:tree.meth, a:param, a:tree) | call self.visit(a:tree.args, a:param, a:tree)',
+      \ 'NEWCLASS'	: 'call self.visit(a:tree.def, a:param, a:tree)',
+      \ 'RETURN'	: 'if has_key(a:tree, "expr") | call self.visit(a:tree.expr, a:param, a:tree) | endif',
+      \ 'LAMBDA'	: 'call extend(a:tree, self.lambdameth(a:parent)) | call self.visit(a:tree.meth, a:param, a:tree) | call self.visit(a:tree.stats, a:param, a:tree) | call self.visit(a:tree.args, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree)'
       \}
 
 let s:TV_CMP_POS = 'a:tree.pos <= a:param.pos && a:param.pos <= get(a:tree, "endpos", -1)'
@@ -1695,12 +1816,13 @@ let s:TV_CMP_POS_BODY = 'has_key(a:tree, "body") && a:tree.body.pos <= a:param.p
 " Return a stack of enclosing types (including local or anonymous classes).
 " Given the optional argument, return all (toplevel or static member) types besides enclosing types.
 fu! s:SearchTypeAt(tree, targetPos, ...)
-  let s:TreeVisitor.CLASSDEF	= 'if a:param.allNonLocal || ' . s:TV_CMP_POS . ' | call add(a:param.result, a:tree) | call self.visit(a:tree.defs, a:param) | endif'
-  let s:TreeVisitor.METHODDEF	= 'if ' . s:TV_CMP_POS_BODY . ' | call self.visit(a:tree.body, a:param) | endif'
-  let s:TreeVisitor.VARDEF	= 'if has_key(a:tree, "init") && !a:param.allNonLocal && ' . s:TV_CMP_POS . ' | call self.visit(a:tree.init, a:param) | endif'
+  let s:TreeVisitor.CLASSDEF	= 'if a:param.allNonLocal || ' . s:TV_CMP_POS . ' | call add(a:param.result, a:tree) | call self.visit(a:tree.defs, a:param, a:tree) | endif'
+  let s:TreeVisitor.METHODDEF	= 'if ' . s:TV_CMP_POS_BODY . ' | call self.visit(a:tree.body, a:param, a:tree) | endif'
+  let s:TreeVisitor.VARDEF	= 'if has_key(a:tree, "init") && !a:param.allNonLocal && ' . s:TV_CMP_POS . ' | call self.visit(a:tree.init, a:param, a:tree) | endif'
+  let s:TreeVisitor.IDENT = ''
 
   let result = []
-  call s:TreeVisitor.visit(a:tree, {'result': result, 'pos': a:targetPos, 'allNonLocal': a:0 == 0 ? 0 : 1})
+  call s:TreeVisitor.visit(a:tree, {'result': result, 'pos': a:targetPos, 'allNonLocal': a:0 == 0 ? 0 : 1}, {})
   return result
 endfu
 
@@ -1709,13 +1831,15 @@ endfu
 fu! s:SearchNameInAST(tree, name, targetPos, fullmatch)
   let comparator = a:fullmatch ? '==#' : '=~# "^" .'
   let cmd = 'if a:tree.name ' .comparator. ' a:param.name | call add(a:param.result, a:tree) | endif'
-  let s:TreeVisitor.CLASSDEF	= 'if ' . s:TV_CMP_POS . ' | ' . cmd . ' | call self.visit(a:tree.defs, a:param) | endif'
-  let s:TreeVisitor.METHODDEF	= cmd . ' | if ' . s:TV_CMP_POS_BODY . ' | call self.visit(a:tree.params, a:param) | call self.visit(a:tree.body, a:param) | endif'
-  let s:TreeVisitor.VARDEF	= cmd . ' | if has_key(a:tree, "init") && ' . s:TV_CMP_POS . ' | call self.visit(a:tree.init, a:param) | endif'
+  let cmdPos = 'if a:tree.name ' .comparator. ' a:param.name && a:tree.pos <= a:param.pos | call add(a:param.result, a:tree) | endif'
+  let s:TreeVisitor.CLASSDEF	= 'if ' . s:TV_CMP_POS . ' | ' . cmd . ' | call self.visit(a:tree.defs, a:param, a:tree) | endif'
+  let s:TreeVisitor.METHODDEF	= cmd . ' | if ' . s:TV_CMP_POS_BODY . ' | call self.visit(a:tree.params, a:param, a:tree) | call self.visit(a:tree.body, a:param, a:tree) | endif'
+  let s:TreeVisitor.VARDEF	= cmdPos . ' | if has_key(a:tree, "init") && ' . s:TV_CMP_POS . ' | call self.visit(a:tree.init, a:param, a:tree) | endif'
+  let s:TreeVisitor.IDENT = 'if a:parent.tag == "LAMBDA" && a:parent.body.pos <= a:param.pos | call add(a:param.result, a:parent) | endif'
 
   let result = []
-  call s:TreeVisitor.visit(a:tree, {'result': result, 'pos': a:targetPos, 'name': a:name})
-  "call s:Info(a:name . ' ' . string(result) . ' line: ' . line('.') . ' col: ' . col('.')) . ' ' . a:targetPos
+  call s:TreeVisitor.visit(a:tree, {'result': result, 'pos': a:targetPos, 'name': a:name}, {})
+  " call s:Info(a:name . ' ' . string(result) . ' line: ' . line('.') . ' col: ' . col('.'))
   return result
 endfu
 
@@ -1919,6 +2043,67 @@ endfu
 fu! javacomplete#GetClassPath()
   return exists('s:classpath') ? join(s:classpath, s:PATH_SEP) : ''
 endfu
+
+function! s:nr2hex(nr)
+  let n = a:nr
+  let r = ""
+  while n
+    let r = '0123456789ABCDEF'[n % 16] . r
+    let n = n / 16
+  endwhile
+  return r
+endfunction
+
+function! s:encodeURI(path)
+  let ret = ''
+  let len = strlen(a:path)
+  let i = 0
+  while i < len
+    let ch = a:path[i]
+    if ch =~# '[0-9A-Za-z-._~!''()*]'
+      let ret .= ch
+    elseif ch == ' '
+      let ret .= '+'
+    else
+      let ret .= '%' . substitute('0' . s:nr2hex(char2nr(ch)), '^.*\(..\)$', '\1', '')
+    endif
+    let i = i + 1
+  endwhile
+  return ret
+endfunction
+
+function! s:FindClassPath() abort
+  if executable('mvn')
+    let key = s:encodeURI(fnamemodify('.', ':p'))
+    let base = expand('~/.javacomplete2/mvnclasspath/')
+    if !isdirectory(base)
+      call mkdir(base, "p")
+    endif
+    let path = base . key
+
+    let pom = findfile('pom.xml', escape(expand('%:p:h'), '*[]?{}, ') . ';')
+    if pom != "" && filereadable(path)
+      if getftime(path) >= getftime('pom.xml')
+        return join(readfile(path), '')
+      endif
+    endif
+    return s:GenerateClassPath(path)
+  else
+    return '.'
+  endif
+endfunction
+
+function! s:GenerateClassPath(path) abort
+  let lines = split(system('mvn dependency:build-classpath -DincludeScope=test'), "\n")
+  for i in range(len(lines))
+    if lines[i] =~ 'Dependencies classpath:'
+      let cp = lines[i+1]
+      call writefile([cp], a:path)
+      return cp
+    endif
+  endfor
+  return '.'
+endfunction
 
 " s:GetClassPath()							{{{2
 fu! s:GetClassPath()
@@ -2386,11 +2571,14 @@ function! s:GetExtraPath()
 endfunction
 
 function! s:ExpandPathToJars(path)
+  if s:IsJarOrZip(a:path)
+    return [a:path]
+  endif
+
   let jars = []
   let files = globpath(a:path, "*", 1, 1)
   for file in files
-    let filetype = strpart(file, len(file) - 4)
-    if filetype ==? ".jar" || filetype ==? ".zip"
+    if s:IsJarOrZip(file)
       call add(jars, s:PATH_SEP . file)
     elseif isdirectory(file)
       call extend(jars, s:ExpandPathToJars(file))
@@ -2398,6 +2586,15 @@ function! s:ExpandPathToJars(path)
   endfor
 
   return jars
+endfunction
+
+function! s:IsJarOrZip(path)
+    let filetype = strpart(a:path, len(a:path) - 4)
+    if filetype ==? ".jar" || filetype ==? ".zip"
+      return 1
+    endif
+
+    return 0
 endfunction
 
 " class information							{{{2
@@ -2464,17 +2661,18 @@ function! s:DoGetClassInfo(class, ...)
     return {}
   endif
 
-  let typename	= substitute(a:class, '\s', '', 'g')
-
+  let typename = a:class 
+  "substitute(a:class, '\s', '', 'g')
   let typeArguments = ''
-  if a:class =~ s:RE_TYPE_WITH_ARGUMENTS
-    let lbridx = stridx(typename, '<')
-    let typeArguments = typename[lbridx + 1 : -2]
-    let typename = typename[0 : lbridx - 1]
+
+  let splittedType = s:SplitTypeArguments(typename)
+  if type(splittedType) == type([])
+    let typename = splittedType[0]
+    let typeArguments = splittedType[1]
   endif
 
   if typename !~ '^\s*' . s:RE_QUALID . '\s*$' || s:HasKeyword(typename)
-    call s:Info("No qualid")
+    call s:Info("No qualid: ". typename)
     return {}
   endif
 
@@ -2497,6 +2695,23 @@ function! s:DoGetClassInfo(class, ...)
 
   return {}
 endfu
+
+function! s:SplitTypeArguments(typename)
+  if a:typename =~ s:RE_TYPE_WITH_ARGUMENTS
+    let lbridx = stridx(a:typename, '<')
+    let typeArguments = a:typename[lbridx + 1 : -2]
+    let typename = a:typename[0 : lbridx - 1]
+    return [typename, typeArguments]
+  endif
+
+  let lbridx = stridx(a:typename, '<')
+  if lbridx > 0
+    let typename = a:typename[0 : lbridx - 1]
+    return [typename, 0]
+  endif
+
+  return a:typename
+endfunction
 
 function! s:CollectTypeArguments(typeArguments, packagename, filekey)
   let typeArgumentsCollected = ''
@@ -2526,6 +2741,11 @@ function! s:CollectTypeArguments(typeArguments, packagename, filekey)
         let lbridx = stridx(arg, '<')
         let argTypeArguments = arg[lbridx : -1]
         let arg = arg[0 : lbridx - 1]
+      endif
+
+      if arg =~ s:RE_TYPE_ARGUMENT_EXTENDS
+        let i = matchend(arg, s:RE_TYPE)
+        let arg = arg[i+1 : -1]
       endif
 
       let fqns = s:CollectFQNs(arg, a:packagename, a:filekey)
@@ -2593,6 +2813,7 @@ function! s:CollectFQNs(typename, packagename, filekey)
   for p in imports
     call add(fqns, p . a:typename)
   endfor
+  call add(fqns, 'java.lang.Object')
   return fqns
 endfunction
 
@@ -2869,7 +3090,7 @@ fu! s:DoGetMethodList(methods, ...)
   let paren = a:0 == 0 || !a:1 ? '(' : ''
   let s = ''
   for method in a:methods
-    let s .= "{'kind':'" . (s:IsStatic(method.m) ? "M" : "m") . "','word':'" . method.n . paren . "','abbr':'" . method.n . "()','menu':'" . method.d . "','dup':'1'},"
+    let s .= "{'kind':'" . (s:IsStatic(method.m) ? "M" : "m") . "','word':'" . method.n . (b:context_type == s:CONTEXT_METHOD_REFERENCE ? "" : paren) . "','abbr':'" . method.n . (b:context_type == s:CONTEXT_METHOD_REFERENCE ? "": "()"). "','menu':'" . method.d . "','dup':'1'},"
   endfor
   return s
 endfu
@@ -2881,16 +3102,25 @@ endfu
 "	13 - for import or extends or implements, only nested types
 "	20 - for package
 fu! s:DoGetMemberList(ci, kind)
+  let kind = a:kind
   if type(a:ci) != type({}) || a:ci == {}
     return []
   endif
 
-  let s = a:kind == 11 ? "{'kind': 'C', 'word': 'class', 'menu': 'Class'}," : ''
+  let s = ''
+  if b:context_type == s:CONTEXT_METHOD_REFERENCE
+    let kind = 0
+    if a:kind != 0
+      let s = "{'kind': 'M', 'word': 'new', 'menu': 'new'},"
+    endif
+  endif
 
-  let members = s:SearchMember(a:ci, '', 1, a:kind, 1, 0, a:kind == 2)
+  let s .= kind == 11 ? "{'kind': 'C', 'word': 'class', 'menu': 'Class'}," : ''
+
+  let members = s:SearchMember(a:ci, '', 1, kind, 1, 0, kind == 2)
 
   " add accessible member types
-  if a:kind / 10 != 0
+  if kind / 10 != 0
     " Use dup here for member type can share name with field.
     for class in members[0]
       "for class in get(a:ci, 'classes', [])
@@ -2901,14 +3131,14 @@ fu! s:DoGetMemberList(ci, kind)
     endfor
   endif
 
-  if a:kind != 13
+  if kind != 13
     let fieldlist = []
     let sfieldlist = []
     for field in members[2]
       "for field in get(a:ci, 'fields', [])
       if s:IsStatic(field['m'])
         call add(sfieldlist, field)
-      elseif a:kind / 10 == 0
+      elseif kind / 10 == 0
         call add(fieldlist, field)
       endif
     endfor
@@ -2918,17 +3148,20 @@ fu! s:DoGetMemberList(ci, kind)
     for method in members[1]
       if s:IsStatic(method['m'])
         call add(smethodlist, method)
-      elseif a:kind / 10 == 0
+      elseif kind / 10 == 0
         call add(methodlist, method)
       endif
     endfor
 
-    if a:kind / 10 == 0
+    if kind / 10 == 0
       let s .= s:DoGetFieldList(fieldlist)
       let s .= s:DoGetMethodList(methodlist)
     endif
-    let s .= s:DoGetFieldList(sfieldlist)
-    let s .= s:DoGetMethodList(smethodlist, a:kind == 12)
+    if b:context_type != s:CONTEXT_METHOD_REFERENCE
+      let s .= s:DoGetFieldList(sfieldlist)
+    endif
+
+    let s .= s:DoGetMethodList(smethodlist, kind == 12)
 
     let s = substitute(s, '\<' . a:ci.name . '\.', '', 'g')
     let s = substitute(s, '\<java\.lang\.', '', 'g')
@@ -3053,17 +3286,18 @@ if !exists("g:JavaComplete_SourcesPath")
   call s:Info("Default sources: ". g:JavaComplete_SourcesPath)
 endif
 
-if exists('g:JavaComplete_LibsPath')
-  let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath. s:PATH_SEP
-else
-  let g:JavaComplete_LibsPath = ""
-endif
-
-let g:JavaComplete_LibsPath = g:JavaComplete_LibsPath
 if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepositoryDisable
-  let g:JavaComplete_LibsPath .= "~/.m2/repository". s:PATH_SEP
+  if exists('g:JavaComplete_LibsPath')
+    let g:JavaComplete_LibsPath .= s:PATH_SEP
+  else
+    let g:JavaComplete_LibsPath = ""
+  endif
+
+  let s:pom = findfile('pom.xml', escape(expand('.'), '*[]?{}, ') . ';')
+  if s:pom != ""
+    let g:JavaComplete_LibsPath .= s:FindClassPath()
+  endif
 endif
-let g:JavaComplete_LibsPath .= s:GetClassPath()
 
 " }}}
 "}}}
