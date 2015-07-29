@@ -33,7 +33,8 @@ Features:
 - Server side java reflection class loader and parsing library;
 - Searches class files automatically, using `pom.xml` to append completion classpath;
 - Generics;
-- Lambdas.
+- Lambdas;
+- Annotations completion.
 
 Features (originally existed):
 - List members of a class, including (static) fields, (static) methods and ctors;
@@ -102,6 +103,8 @@ To enable inserting class imports with F4, add:
 `g:JavaComplete_SourcesPath` - path of additional sources. Don't try to add all sources you have, this will slow down the parsing process. Instead, add your project sources and necessary library sources. If you have compiled classes add them to the previous config (`g:JavaComplete_LibsPath`) instead. By default the plugin will search the `src` directory and add it automatically.
 
 `let g:JavaComplete_MavenRepositoryDisable = 1` - don't append classpath with libraries specified in `pom.xml` of your project. By default is `0`.
+
+`let g:JavaComplete_UseFQN = 1` - use full qualified name in completions description. By default is `0`.
 
 ## Commands
 

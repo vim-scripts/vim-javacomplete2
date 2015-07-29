@@ -1,23 +1,36 @@
 " Vim completion script
-" Version:	2.2
+" Version:	2.3
 " Language:	Java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-07-08
+" Last Change:	2015-07-29
 " Copyright:	Copyright (C) 2006-2015 cheng fang, artur shaik. All rights reserved.
 " License:	Vim License	(see vim's :help license)
 
+" It doesn't make sense to do any work if vim doesn't support any Python since
+" we relly on it to properly work.
+if has("python2")
+  command! -nargs=1 JavacompletePy py <args>
+  command! -nargs=1 JavacompletePyfile pyfile <args>
+elseif has("python3")
+  command! -nargs=1 JavacompletePy py3 <args>
+  command! -nargs=1 JavacompletePyfile py3file <args>
+else
+  echoerr "Javacomplete needs Python support to run!"
+  finish
+endif
 
 " constants							{{{1
 " input context type
-let s:CONTEXT_AFTER_DOT		     = 1
-let s:CONTEXT_METHOD_PARAM	     = 2
-let s:CONTEXT_IMPORT		     = 3
-let s:CONTEXT_IMPORT_STATIC	     = 4
-let s:CONTEXT_PACKAGE_DECL	     = 6 
-let s:CONTEXT_NEED_TYPE		     = 7 
-let s:CONTEXT_COMPLETE_CLASS	 = 8
-let s:CONTEXT_METHOD_REFERENCE   = 9
-let s:CONTEXT_OTHER 		     = 0
+let s:CONTEXT_AFTER_DOT		        = 1
+let s:CONTEXT_METHOD_PARAM	        = 2
+let s:CONTEXT_IMPORT		        = 3
+let s:CONTEXT_IMPORT_STATIC	        = 4
+let s:CONTEXT_PACKAGE_DECL	        = 6 
+let s:CONTEXT_NEED_TYPE		        = 7 
+let s:CONTEXT_COMPLETE_CLASS	    = 8
+let s:CONTEXT_METHOD_REFERENCE      = 9
+let s:CONTEXT_ANNOTATION_FIELDS     = 10
+let s:CONTEXT_OTHER 		        = 0
 
 let s:MODIFIER_ABSTRACT         = '10000000001'
 
@@ -76,6 +89,7 @@ endif
 
 let s:RE_BRACKETS	= '\%(\s*\[\s*\]\)'
 let s:RE_IDENTIFIER	= '[a-zA-Z_$][a-zA-Z0-9_$]*'
+let s:RE_ANNOTATION	= '@[a-zA-Z_][a-zA-Z0-9_$]*'
 let s:RE_QUALID		= s:RE_IDENTIFIER. '\%(\s*\.\s*' .s:RE_IDENTIFIER. '\)*'
 
 let s:RE_REFERENCE_TYPE	= s:RE_QUALID . s:RE_BRACKETS . '*'
@@ -113,6 +127,26 @@ let s:files = {}	" srouce file path -> properties, e.g. {filekey: {'unit': compi
 let s:history = {}	" 
 
 
+if exists('*uniq')
+  function! s:_uniq(list) abort
+    return uniq(a:list)
+  endfunction
+else
+  function! s:_uniq(list) abort
+    let i = len(a:list) - 1
+    while 0 < i
+      if a:list[i] ==# a:list[i - 1]
+        call remove(a:list, i)
+        let i -= 2
+      else
+        let i -= 1
+      endif
+    endwhile
+    return a:list
+  endfunction
+endif
+
+
 let s:log = []
 " level
 " 	5	off/fatal 
@@ -126,7 +160,7 @@ fu! javacomplete#SetLogLevel(level)
 endfu
 
 fu! javacomplete#GetLogLevel()
-  return exists('s:loglevel') ? s:loglevel : 0
+  return exists('s:loglevel') ? s:loglevel : 5
 endfu
 
 fu! javacomplete#GetLogContent()
@@ -165,16 +199,21 @@ fu! s:System(cmd, caller)
 endfu
 
 function! s:PollServer()
-  if !pyeval("'bridgeState' not in locals() or not bridgeState")
-    return pyeval("bridgeState.poll()")
-  endif
-
-  return 0
+  let a:value = 0
+JavacompletePy << EOPC
+try:
+  vim.command("let a:value = '%d'" % bridgeState.poll())
+except:
+  # we'll get here if the bridgeState variable was not defined or if it's None.
+  # In this case we stop the processing and return the default 0 value.
+  pass
+EOPC
+  return a:value
 endfunction
 
 function! javacomplete#TerminateServer()
   if s:PollServer() != 0
-    py bridgeState.terminateServer()
+    JavacompletePy bridgeState.terminateServer()
   endif
 endfunction
 
@@ -192,26 +231,24 @@ function! javacomplete#StartServer()
     call s:Info("Classpath: ". classpath)
 
     let file = g:JavaComplete_Home. "/autoload/javavibridge.py"
-    execute "pyfile ". file
+    execute "JavacompletePyfile ". file
 
-    py import vim
-    py bridgeState = JavaviBridge()
-    py bridgeState.setupServer(vim.eval('javacomplete#GetJVMLauncher()'), vim.eval('args'), vim.eval('classpath'))
+    JavacompletePy import vim
+    JavacompletePy bridgeState = JavaviBridge()
+    JavacompletePy bridgeState.setupServer(vim.eval('javacomplete#GetJVMLauncher()'), vim.eval('args'), vim.eval('classpath'))
 
   endif
 endfunction
 
 function! javacomplete#ShowPort()
   if s:PollServer()
-    let port = pyeval("bridgeState.port()")
-    echom "Javavi port: ". port
+    JavacompletePy vim.command('echom "Javavi port: %d"' % bridgeState.port())
   endif
 endfunction
 
 function! javacomplete#ShowPID()
   if s:PollServer()
-    let pid = pyeval("bridgeState.pid()")
-    echom "Javavi pid: ". pid
+    JavacompletePy vim.command('echom "Javavi pid: %d"' % bridgeState.pid())
   endif
 endfunction
 
@@ -219,7 +256,10 @@ function! s:GetClassNameWithScope()
   let curline = getline('.')
   let word_l = col('.') - 1
   let word_r = col('.') - 2
-  while curline[word_l - 1] =~ '[.A-Za-z0-9_]'
+  while curline[word_l - 1] =~ '[.@A-Za-z0-9_]'
+    if curline[word_l - 1] == '@'
+      break
+    endif
     let word_l -= 1
   endwhile
   while curline[word_r + 1] =~ '[.A-Za-z0-9_]'
@@ -333,15 +373,17 @@ function! javacomplete#Complete(findstart, base)
     let s:et_whole = reltime()
     let start = col('.') - 1
 
-    let classScope = s:GetClassNameWithScope()
-    if classScope =~ '^[A-Z][A-Za-z0-9_]*$'
+    if s:GetClassNameWithScope() =~ '^[@A-Z][A-Za-z0-9_]*$'
       let b:context_type = s:CONTEXT_COMPLETE_CLASS
 
       let curline = getline(".")
       let start = col('.') - 1
 
-      while start > 0 && curline[start - 1] =~ '[A-Za-z0-9_]'
+      while start > 0 && curline[start - 1] =~ '[@A-Za-z0-9_]'
         let start -= 1
+        if curline[start] == '@'
+          break
+        endif
       endwhile
 
       return start
@@ -394,6 +436,11 @@ function! javacomplete#Complete(findstart, base)
       let b:dotexpr = strpart(b:dotexpr, 0, strridx(b:dotexpr, '.')+1)
       return start - strlen(b:incomplete)
 
+    elseif statement =~ '^@'. s:RE_IDENTIFIER
+      let b:context_type = s:CONTEXT_ANNOTATION_FIELDS
+      let b:incomplete = substitute(statement, '\s*(\s*$', '', '')
+
+      return start
 
       " method parameters, treat methodname or 'new' as an incomplete word
     elseif statement =~ '(\s*$'
@@ -454,8 +501,12 @@ function! javacomplete#Complete(findstart, base)
   let result = []
 
   " Try to complete incomplete class name
-  if b:context_type == s:CONTEXT_COMPLETE_CLASS && a:base =~ '^[A-Z][A-Za-z0-9_]*$'
-    let response = s:RunReflection("-similar-classes", a:base, 'Filter packages by incomplete class name')
+  if b:context_type == s:CONTEXT_COMPLETE_CLASS && a:base =~ '^[@A-Z][A-Za-z0-9_]*$'
+    if a:base =~ s:RE_ANNOTATION
+      let response = s:RunReflection("-similar-annotations", a:base[1:], 'Filter packages by incomplete class name')
+    else
+      let response = s:RunReflection("-similar-classes", a:base, 'Filter packages by incomplete class name')
+    endif
     if response =~ '^['
       let result = eval(response)
     endif
@@ -491,6 +542,23 @@ function! javacomplete#Complete(findstart, base)
       let methods = s:SearchForName(b:incomplete, 0, 1)[1]
       call extend(result, eval('[' . s:DoGetMethodList(methods) . ']'))
 
+    elseif b:context_type == s:CONTEXT_ANNOTATION_FIELDS
+      let last = split(b:incomplete, '@')[-1]
+      let identList = matchlist(last, '\('. s:RE_IDENTIFIER. '\)\((\|$\)')
+      if !empty(identList)
+        let name = identList[1]
+        let ti = s:DoGetClassInfo(name)
+        if has_key(ti, 'methods') 
+          let methods = []
+          for m in ti.methods
+            if m.m == s:MODIFIER_ABSTRACT && m.n !~ '^\(toString\|annotationType\|equals\|hashCode\)$'
+              call add(methods, m)
+            endif
+          endfor
+          call extend(result, eval('[' . s:DoGetMethodList(methods, 2) . ']'))
+        endif
+
+      endif
     else
       let result = s:CompleteAfterWord(b:incomplete)
     endif
@@ -2133,7 +2201,6 @@ fu! s:GetClassPath()
   if empty($CLASSPATH)
     if s:JAVA_HOME == ''
       let java = javacomplete#GetJVMLauncher()
-      call s:Info(exepath(java))
       let javaSettings = split(s:System(java. " -XshowSettings", "Get java settings"), '\n')
       for line in javaSettings
         if line =~ 'java\.home'
@@ -2163,7 +2230,7 @@ function! javacomplete#CompileJavavi()
     exe '!'. 'mvn -f "'. javaviDir. '/pom.xml" compile'
   else
     call mkdir(javaviDir. "target/classes", "p")
-    exe '!'. javacomplete#GetCompiler(). ' -d '. javaviDir. 'target/classes -classpath '. javaviDir. 'target/classes:'. g:JavaComplete_Home. '/libs/javaparser.jar: -sourcepath '. javaviDir. 'src/main/java: -g -nowarn -target 1.7 -source 1.7 -encoding UTF-8 '. javaviDir. 'src/main/java/kg/ash/javavi/Javavi.java'
+    exe '!'. javacomplete#GetCompiler(). ' -d '. javaviDir. 'target/classes -classpath '. javaviDir. 'target/classes:'. g:JavaComplete_Home. '/libs/javaparser.jar'. s:PATH_SEP .' -sourcepath '. javaviDir. 'src/main/java: -g -nowarn -target 1.7 -source 1.7 -encoding UTF-8 '. javaviDir. 'src/main/java/kg/ash/javavi/Javavi.java'
   endif
 endfunction
 
@@ -2175,12 +2242,22 @@ fu! s:GetJavaviClassPath()
     call javacomplete#CompileJavavi()
   endif
 
-  if !empty(globpath(javaviDir. 'target/classes', '**/*.class', 1, 1))
+  if !empty(s:GlobPathList(javaviDir. 'target/classes', '**/*.class', 1))
     return javaviDir. "target/classes"
   else
     echo "No Javavi library classes found, it means that we couldn't compile it. Do you have JDK7+ installed?"
   endif
 endfu
+
+" workaround for https://github.com/artur-shaik/vim-javacomplete2/issues/20
+" should be removed in future versions
+function! s:GlobPathList(path, pattern, suf)
+  if has("patch-7.4.279")
+    return globpath(a:path, a:pattern, a:suf, 1)
+  else
+    return split(globpath(a:path, a:pattern, a:suf), "\n")
+  endif
+endfunction
 
 fu! s:GetClassPathOfJsp()
   if exists('b:classpath_jsp')
@@ -2525,7 +2602,11 @@ fu! s:RunReflection(option, args, log)
   if s:PollServer()
     let cmd = a:option. ' "'. a:args. '"'
     call s:Info("RunReflection: ". cmd. " [". a:log. "]")
-    return pyeval('bridgeState.send(vim.eval("cmd"))')
+    let a:result = ""
+JavacompletePy << EOPC
+vim.command('let a:result = "%s"' % bridgeState.send(vim.eval("cmd")))
+EOPC
+    return a:result
   endif
 
   return ""
@@ -2533,7 +2614,7 @@ endfu
 
 function! s:ExpandAllPaths(path)
     let result = ''
-    let list = uniq(split(a:path, s:PATH_SEP))
+    let list = s:_uniq(sort(split(a:path, s:PATH_SEP)))
     for l in list
       let result = result. substitute(expand(l), '\\', '/', 'g') . s:PATH_SEP
     endfor
@@ -2576,7 +2657,7 @@ function! s:ExpandPathToJars(path)
   endif
 
   let jars = []
-  let files = globpath(a:path, "*", 1, 1)
+  let files = s:GlobPathList(a:path, "*", 1)
   for file in files
     if s:IsJarOrZip(file)
       call add(jars, s:PATH_SEP . file)
@@ -3068,6 +3149,7 @@ endfu
 
 fu! s:DoGetFieldList(fields)
   let s = ''
+  let useFQN = s:UseFQN()
   for field in a:fields
     if type(field.t) == type([])
       let fieldType = field.t[0]
@@ -3081,17 +3163,52 @@ fu! s:DoGetFieldList(fields)
     else
       let fieldType = field.t
     endif
+    if !useFQN
+      let fieldType = s:CleanFQN(fieldType)
+    endif
     let s .= "{'kind':'" . (s:IsStatic(field.m) ? "F" : "f") . "','word':'" . field.n . "','menu':'" . fieldType . "','dup':1},"
   endfor
   return s
 endfu
 
+function! s:CleanFQN(fqnDeclaration) 
+  let start = 0
+  let fqnDeclaration = a:fqnDeclaration
+  let result = matchlist(fqnDeclaration, '\<'. s:RE_IDENTIFIER. '\%(\s*\.\s*\('. s:RE_IDENTIFIER. '\)\)*', start)
+  while !empty(result)
+
+    if len(result[1]) > 0
+      let fqnDeclaration = substitute(fqnDeclaration, result[0], result[1], '')
+      let shift = result[1]
+    else
+      let shift = result[0]
+    endif
+    let start = match(fqnDeclaration, shift, start) + len(shift)
+
+    let result = matchlist(fqnDeclaration, '\<'. s:RE_IDENTIFIER. '\%(\s*\.\s*\('. s:RE_IDENTIFIER. '\)\)*', start)
+  endwhile
+
+  return fqnDeclaration
+endfunction
+
 fu! s:DoGetMethodList(methods, ...)
-  let paren = a:0 == 0 || !a:1 ? '(' : ''
+  let paren = a:0 == 0 || !a:1 ? '(' : (a:1 == 2) ? ' = ' : ''
+  let abbrEnd = ''
+  if b:context_type != s:CONTEXT_METHOD_REFERENCE 
+    if a:0 == 0 || !a:1 
+      let abbrEnd = '()'
+    endif
+  endif
+
+  let useFQN = s:UseFQN()
   let s = ''
   for method in a:methods
-    let s .= "{'kind':'" . (s:IsStatic(method.m) ? "M" : "m") . "','word':'" . method.n . (b:context_type == s:CONTEXT_METHOD_REFERENCE ? "" : paren) . "','abbr':'" . method.n . (b:context_type == s:CONTEXT_METHOD_REFERENCE ? "": "()"). "','menu':'" . method.d . "','dup':'1'},"
+    if !useFQN
+      let method.d = s:CleanFQN(method.d)
+    endif
+    let s .= "{'kind':'" . (s:IsStatic(method.m) ? "M" : "m") . "','word':'" . method.n . (b:context_type == s:CONTEXT_METHOD_REFERENCE ? "" : paren) . "','abbr':'" . method.n . abbrEnd. "','menu':'" . method.d . "','dup':'1'},"
   endfor
+
   return s
 endfu
 
@@ -3164,7 +3281,6 @@ fu! s:DoGetMemberList(ci, kind)
     let s .= s:DoGetMethodList(smethodlist, kind == 12)
 
     let s = substitute(s, '\<' . a:ci.name . '\.', '', 'g')
-    let s = substitute(s, '\<java\.lang\.', '', 'g')
     let s = substitute(s, '\<\(public\|static\|synchronized\|transient\|volatile\|final\|strictfp\|serializable\|native\)\s\+', '', 'g')
   endif
   return eval('[' . s . ']')
@@ -3267,7 +3383,12 @@ fu! s:DoGetPackageInfoInDirs(package, onlyPackages, ...)
   return list
 endfu
 
-
+function! s:UseFQN() 
+  if exists('g:JavaComplete_UseFQN') && g:JavaComplete_UseFQN
+    return 1
+  endif
+  return 0
+endfunction
 
 
 let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?/?')
@@ -3277,7 +3398,7 @@ call s:Info("JavaComplete_Home: ". g:JavaComplete_Home)
 
 if !exists("g:JavaComplete_SourcesPath")
   let g:JavaComplete_SourcesPath = ''
-  let sources = globpath(getcwd(), '**/src', 0, 1)
+  let sources = s:GlobPathList(getcwd(), '**/src', 0)
   for src in sources
     if match(src, '.*build.*') < 0
       let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. src. s:PATH_SEP

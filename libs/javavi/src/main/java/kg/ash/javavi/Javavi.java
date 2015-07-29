@@ -18,37 +18,20 @@ import java.util.Locale;
 import java.util.StringTokenizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import kg.ash.javavi.readers.ClassReader;
-import kg.ash.javavi.searchers.ClassSearcher;
-import kg.ash.javavi.searchers.PackagesSearcher;
-import kg.ash.javavi.readers.Parser;
+import kg.ash.javavi.actions.Action;
 import kg.ash.javavi.clazz.SourceClass;
-import java.util.zip.ZipFile;
+import kg.ash.javavi.searchers.ClassMap;
+import kg.ash.javavi.actions.ActionFactory;
 
 public class Javavi {
 
-    static final String VERSION	= "2.2.0";
-
-    public static final int STRATEGY_ALPHABETIC	= 128;
-    public static final int STRATEGY_HIERARCHY		= 256;
-    public static final int STRATEGY_DEFAULT		= 512;
-
-    public static final String KEY_NAME		= "'n':";	// "'name':";
-    public static final String KEY_TYPE		= "'t':";	// "'type':";
-    public static final String KEY_MODIFIER		= "'m':";	// "'modifier':";
-    public static final String KEY_PARAMETERTYPES	= "'p':";	// "'parameterTypes':";
-    public static final String KEY_RETURNTYPE		= "'r':";	// "'returnType':";
-    public static final String KEY_DESCRIPTION		= "'d':";	// "'description':";
-    public static final String KEY_DECLARING_CLASS	= "'c':";	// "'declaringclass':";
-
-    public static final int INDEX_PACKAGE = 0;
-    public static final int INDEX_CLASS = 1;
+    static final String VERSION	= "2.3.0";
 
     public static String NEWLINE = "";
 
     public static HashMap<String,SourceClass> cachedClasses = new HashMap<>();
     public static HashMap<String,StringBuilder[]> cachedPackages = new HashMap<>();
-    public static HashMap<String,List<String>> cachedClassPackages = new HashMap<>();
+    public static HashMap<String,ClassMap> cachedClassPackages = new HashMap<>();
 
     static boolean debugMode = false;
 
@@ -63,27 +46,23 @@ public class Javavi {
     }
 
     private static void usage() {
-        System.out.println("Reflection and parsing for javacomplete (" + VERSION + ")");
-        System.out.println("  java [-classpath] kg.ash.javavi.Javavi [-sources sourceDirs] [-jars jarDirs] [-h] [-v] [-p] [-E] [name]");
+        version();
+        System.out.println("  java [-classpath] kg.ash.javavi.Javavi [-sources sourceDirs] [-h] [-v] [-d] [-D port] [action]");
         System.out.println("Options:");
-        System.out.println("  -p	        check package existed and read package children");
-        System.out.println("  -E	        check class existed and read class information");
         System.out.println("  -h	        help");
         System.out.println("  -v	        version");
         System.out.println("  -sources      sources directory");
-        System.out.println("  -jars         jars directories");
+        System.out.println("  -d            enable debug mode");
+        System.out.println("  -D port       start daemon on specified port");
     }
 
-    private static final int COMMAND__CLASS_INFO = 1;
-    private static final int COMMAND__PACKAGESLIST = 2;
-    private static final int COMMAND__SOURCE_PATH_CLASS_INFO = 3;
-    private static final int COMMAND__SIMILAR_CLASSES = 4;
-    private static final int COMMAND__CLASSNAME_PACKAGES = 5;
-    private static final int COMMAND__EXECUTE_DAEMON = 6;
+    private static void version() {
+        System.out.println("Reflection and parsing for javavi " + 
+                "vim plugin (" + VERSION + ")");
+    }
 
-
-    static String sources = "";
-    private static Daemon daemon = null;
+    public static HashMap<String,String> system = new HashMap<>();
+    public static Daemon daemon = null;
 
     public static void main( String[] args ) throws Exception {
         String response = makeResponse(args);
@@ -94,11 +73,7 @@ public class Javavi {
 
     public static String makeResponse(String[] args) {
 
-        String target = "";
-        int command = 0;
-        int daemonPort = 0;
-        TargetParser targetParser = null;
-
+        Action action = null;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             debug(arg);
@@ -107,89 +82,30 @@ public class Javavi {
                     usage();
                     return "";
                 case "-v":
-                    return "Reflection and parsing for javavi vim plugin (" + VERSION + ")";
-                case "-E":
-                    command = COMMAND__CLASS_INFO;
-                    break;
-                case "-p":
-                    command = COMMAND__PACKAGESLIST;
-                    break;
-                case "-s":
-                    command = COMMAND__SOURCE_PATH_CLASS_INFO;
-                    break;
-                case "-class-packages":
-                    command = COMMAND__CLASSNAME_PACKAGES;
-                    break;
-                case "-similar-classes":
-                    command = COMMAND__SIMILAR_CLASSES;
-                    break;
+                    version();
+                    return "";
                 case "-sources": 
-                    sources = args[++i];
-                    debug(sources);
+                    system.put("sources", args[++i]);
                     break;
                 case "-d":
                     Javavi.debugMode = true;
                     break;
-                case "-D":
-                    command = COMMAND__EXECUTE_DAEMON;
-                    daemonPort = Integer.parseInt(args[++i]);
-                    break;
                 default:
-                    target += arg;
-                    if (targetParser == null) {
-                        targetParser = new TargetParser(sources);
+                    if (action == null) {
+                        action = ActionFactory.get(arg);
                     }
-                    target = targetParser.parse(target);
-                    break;
+            }
+
+            if (action != null) {
+                break;
             }
         }
 
         if (debugMode) NEWLINE = "\n";
 
         String result = "";
-        if (command == COMMAND__CLASS_INFO){
-            ClassSearcher seacher = new ClassSearcher();
-            if (seacher.find(target, sources)) {
-                ClassReader reader = seacher.getReader();
-                reader.setTypeArguments(targetParser.getTypeArguments());
-                SourceClass clazz = reader.read(target);
-                if (clazz != null) {
-                    result = new OutputBuilder().outputClassInfo(clazz);
-                }
-            }
-
-        } else if (command == COMMAND__SOURCE_PATH_CLASS_INFO) {
-            Parser parser = new Parser(sources, target);
-            SourceClass clazz = parser.read(null);
-            if (clazz != null) {
-                result = new OutputBuilder().outputClassInfo(clazz);
-            }
-
-        } else if (command == COMMAND__CLASSNAME_PACKAGES) {
-            if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
-            }
-            return new OutputBuilder().outputClassPackages(target);
-            
-        } else if (command == COMMAND__SIMILAR_CLASSES) {
-            if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
-            }
-            return new OutputBuilder().outputSimilarClasses(target);
-
-        } else if (command == COMMAND__PACKAGESLIST) {
-            if (cachedPackages.isEmpty()) {
-                new PackagesSearcher(sources).collectPackages(cachedPackages, cachedClassPackages);
-            }
-            result = new OutputBuilder().outputPackageInfo(target);
-
-        } else if (command == COMMAND__EXECUTE_DAEMON) {
-            if (daemon == null) {
-                debug("Starting daemon mode");
-                daemon = new Daemon(daemonPort);
-                daemon.start();
-            }
-
+        if (action != null) {
+            result = action.perform(args);
         }
 
         return result;
