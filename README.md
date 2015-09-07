@@ -94,7 +94,9 @@ Add this to your `.vimrc` file:
 
 To enable inserting class imports with F4, add:
 
-`nnoremap <F4> call javacomplete#AddImport()<cr>`
+`nnoremap <F4> :JCAddImport<cr>`
+
+`inoremap <F4> <esc>:JCaddImportI<cr>`
 
 ### Optional
 
@@ -106,31 +108,36 @@ To enable inserting class imports with F4, add:
 
 `let g:JavaComplete_UseFQN = 1` - use full qualified name in completions description. By default is `0`.
 
+`let g:JavaComplete_PomPath = /path/to/pom.xml` - set path to `pom.xml` explicitly. It will be set automatically, if `pom.xml` is in underlying path.
+
 ## Commands
 
-manually run server:
+`JCimportsAddMissing` - add all missing 'imports';
 
-    javacomplete#StartServer()
+`JCimportsRemoveUnused` - remove all unsused 'imports';
 
-manually stop server:
+`JCimportAdd` - add 'import' for classname that is under cursor, or before it;
 
-    javacomplete#TerminateServer()
+`JCimportAddI` - the same, but enable insert mode after 'import' was added;
 
-insert class import:
 
-    javacomplete#AddImport()
+`JCserverShowPort` - show port, through which vim plugin communicates with server;
 
-show port used for javavi server:
+`JCserverShowPID` - show server process identificator;
 
-    javacomplete#ShowPort()
+`JCserverStart` - start server manually;
 
-show javavi server process id:
+`JCserverTerminate` - stop server manually;
 
-    javacomplete#ShowPID()
+`JCserverCompile` - compile server manually;
 
-manually run server compilation:
 
-    javacomplete#CompileJavavi()
+`JCdebugSetLogLevel` - enable logs;
+
+`JCdebugGetLogContent` - get debug logs;
+
+
+`JCcacheClear` - clear cache manually.
 
 ## Limitations:
 

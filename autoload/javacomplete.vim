@@ -1,14 +1,14 @@
 " Vim completion script
-" Version:	2.3
+" Version:	2.3.1
 " Language:	Java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-07-29
+" Last Change:	2015-09-08
 " Copyright:	Copyright (C) 2006-2015 cheng fang, artur shaik. All rights reserved.
 " License:	Vim License	(see vim's :help license)
 
 " It doesn't make sense to do any work if vim doesn't support any Python since
 " we relly on it to properly work.
-if has("python2")
+if has("python")
   command! -nargs=1 JavacompletePy py <args>
   command! -nargs=1 JavacompletePyfile pyfile <args>
 elseif has("python3")
@@ -227,8 +227,11 @@ function! javacomplete#StartServer()
       let sources = '-sources "'. s:ExpandAllPaths(g:JavaComplete_SourcesPath). '" '
     endif
 
-    let args = ' kg.ash.javavi.Javavi '. sources. '-D'
-    call s:Info("Classpath: ". classpath)
+    let args = ' kg.ash.javavi.Javavi '. sources
+    if exists('g:JavaComplete_ServerAutoShutdownTime')
+      let args .= ' -t '. g:JavaComplete_ServerAutoShutdownTime
+    endif
+    let args .= ' -D '
 
     let file = g:JavaComplete_Home. "/autoload/javavibridge.py"
     execute "JavacompletePyfile ". file
@@ -240,33 +243,61 @@ function! javacomplete#StartServer()
   endif
 endfunction
 
+function! javacomplete#ClearCache()
+  let s:cache = {}
+  let s:files = {}
+  let s:history = {}
+endfunction
+
 function! javacomplete#ShowPort()
   if s:PollServer()
-    JavacompletePy vim.command('echom "Javavi port: %d"' % bridgeState.port())
+    JavacompletePy vim.command('echo "Javavi port: %d"' % bridgeState.port())
   endif
 endfunction
 
 function! javacomplete#ShowPID()
   if s:PollServer()
-    JavacompletePy vim.command('echom "Javavi pid: %d"' % bridgeState.pid())
+    JavacompletePy vim.command('echo "Javavi pid: %d"' % bridgeState.pid())
   endif
 endfunction
 
-function! s:GetClassNameWithScope()
+function! s:GetClassNameWithScope(...)
+  let offset = a:0 > 0 ? a:1 : col('.')
   let curline = getline('.')
-  let word_l = col('.') - 1
-  let word_r = col('.') - 2
-  while curline[word_l - 1] =~ '[.@A-Za-z0-9_]'
+  let word_l = offset - 1
+  let word_r = offset - 2
+  while curline[word_l - 1] =~ '[@A-Za-z0-9_]'
     if curline[word_l - 1] == '@'
       break
     endif
     let word_l -= 1
   endwhile
-  while curline[word_r + 1] =~ '[.A-Za-z0-9_]'
+  while curline[word_r + 1] =~ '[A-Za-z0-9_]'
     let word_r += 1
   endwhile
 
   return curline[word_l : word_r]
+endfunction
+
+function! s:SortImports()
+  let imports = s:GetImports('imports')
+  if (len(imports) > 0)
+    let beginLine = imports[0][1]
+    let lastLine = imports[len(imports) - 1][1]
+    let importsList = []
+    for import in imports 
+      call add(importsList, import[0])
+    endfor
+
+    call sort(importsList)
+    let saveCursor = getcurpos()
+    silent execute beginLine.','.lastLine. 'delete _'
+    for imp in importsList
+      call append(beginLine - 1, 'import '. imp. ';')
+      let beginLine += 1
+    endfor
+    call setpos('.', saveCursor)
+  endif
 endfunction
 
 function! s:AddImport(import)
@@ -301,35 +332,41 @@ function! s:AddImport(import)
     call append(insertline, 'import '. a:import. ';')
     call append(insertline, '')
   else
-    let idx = 0
-    while idx < len(imports)
-      let i = imports[idx][0]
-      let list = [i, a:import]
-      call sort(list)
-      if list[0] == a:import || idx == len(imports) - 1
-        call append(imports[idx][1] - 1, 'import '. a:import. ';')
-        return
-      endif
-      let idx += 1
-    endwhile
+    let lastLine = imports[len(imports) - 1][1]
+    call append(lastLine, 'import '. a:import. ';')
   endif
 
 endfunction
 
-function! javacomplete#AddImport()
+function! javacomplete#AddImport(...)
   call javacomplete#StartServer()
 
-  let classname = expand('<cword>')
-  let response = s:RunReflection("-class-packages", classname, 'Filter packages to add import')
+  let i = 0
+  let classname = ''
+  while empty(classname)
+    let offset = col('.') - i
+    if offset <= 0
+      return 
+    endif
+    let classname = s:GetClassNameWithScope(offset)
+    let i += 1
+  endwhile
+
+  let response = s:CommunicateToServer("-class-packages", classname, 'Filter packages to add import')
   if response =~ '^['
     let result = eval(response)
+    let import = ''
     if len(result) == 0
       echo "JavaComplete: classname '". classname. "' not found in any scope."
-      return
-    endif
 
-    let import = 0
-    if len(result) > 1
+    elseif len(result) == 1
+      let import = result[0]
+
+    else
+      if exists('g:ClassnameCompleted') && g:ClassnameCompleted
+        return
+      endif
+
       let index = 0
       for cn in result
         echo "candidate [". index. "]: ". cn
@@ -345,23 +382,90 @@ function! javacomplete#AddImport()
       endif
       redraw!
       
-      if userinput < 0 || userinput > len(result)
+      if userinput < 0 || userinput >= len(result)
         echo "JavaComplete: wrong input"
-        return
+      else
+        let import = result[userinput]
       endif
-
-      let import = result[userinput]
-    else
-      let import = result[0]
     endif
 
-    call s:AddImport(import)
+    if !empty(import)
+      call s:AddImport(import)
+      call s:SortImports()
+    endif
 
+  endif
+
+  if a:0 > 0 && a:1
+    let cur = getcurpos()
+    let cur[2] = cur[2] + 1
+    execute 'startinsert'
+    call setpos('.', cur)
+  endif
+endfunction
+
+function! javacomplete#RemoveUnusedImports()
+  let currentBuf = getline(1,'$')
+  let current = join(currentBuf, '<_javacomplete-linebreak>')
+
+  let response = s:CommunicateToServer('-unused-imports -content', current, 'RemoveUnusedImports')
+  if response =~ '^['
+    let saveCursor = getcurpos()
+    let unused = eval(response)
+    for unusedImport in unused
+      let imports = s:GetImports('imports')
+      for import in imports
+        if import[0] == unusedImport
+          silent execute import[1]. 'delete _'
+        endif
+      endfor
+    endfor
+    let saveCursor[1] = saveCursor[1] - len(unused)
+    call setpos('.', saveCursor)
+  endif
+endfunction
+
+function! javacomplete#AddMissingImports()
+  let currentBuf = getline(1,'$')
+  let current = join(currentBuf, '<_javacomplete-linebreak>')
+
+  let response = s:CommunicateToServer('-missing-imports -content', current, 'RemoveUnusedImports')
+  if response =~ '^['
+    let missing = eval(response)
+    for import in missing
+      if len(import) > 1
+        let index = 0
+        for cn in import
+          echo "candidate [". index. "]: ". cn
+          let index += 1
+        endfor
+        let userinput = input('select one candidate [0]: ', '')
+        if empty(userinput)
+          let userinput = 0
+        elseif userinput =~ '^[0-9]*$'
+          let userinput = str2nr(userinput)
+        else
+          let userinput = -1
+        endif
+        redraw!
+
+        if userinput < 0 || userinput >= len(import)
+          echo "JavaComplete: wrong input"
+          continue
+        endif
+
+        call s:AddImport(import[userinput])
+      else
+        call s:AddImport(import[0])
+      endif
+    endfor
+    call s:SortImports()
   endif
 endfunction
 
 " This function is used for the 'omnifunc' option.		{{{1
 function! javacomplete#Complete(findstart, base)
+  let g:ClassnameCompleted = 0
   if a:findstart
     " reset enviroment
     let b:dotexpr = ''
@@ -503,14 +607,15 @@ function! javacomplete#Complete(findstart, base)
   " Try to complete incomplete class name
   if b:context_type == s:CONTEXT_COMPLETE_CLASS && a:base =~ '^[@A-Z][A-Za-z0-9_]*$'
     if a:base =~ s:RE_ANNOTATION
-      let response = s:RunReflection("-similar-annotations", a:base[1:], 'Filter packages by incomplete class name')
+      let response = s:CommunicateToServer("-similar-annotations", a:base[1:], 'Filter packages by incomplete class name')
     else
-      let response = s:RunReflection("-similar-classes", a:base, 'Filter packages by incomplete class name')
+      let response = s:CommunicateToServer("-similar-classes", a:base, 'Filter packages by incomplete class name')
     endif
     if response =~ '^['
       let result = eval(response)
     endif
     if !empty(result)
+      let g:ClassnameCompleted = 1
       return result
     endif
   endif
@@ -1361,7 +1466,7 @@ fu! s:SearchStaticImports(name, fullmatch)
     endif
   endfor
   if commalist != ''
-    let res = s:RunReflection('-E', commalist, 's:SearchStaticImports in Batch')
+    let res = s:CommunicateToServer('-E', commalist, 's:SearchStaticImports in Batch')
     if res =~ "^{'"
       let dict = eval(res)
       for key in keys(dict)
@@ -1468,7 +1573,7 @@ fu! s:FoundClassLocally(type)
   endif
 
   let srcpath = javacomplete#GetSourcePath(1)
-  let file = globpath(srcpath, substitute(fqn, '\.', '/', 'g') . '.java')
+  let file = globpath(srcpath, substitute(a:type, '\.', '/', 'g') . '.java')
   if file != ''
     return 1
   endif
@@ -2140,29 +2245,34 @@ function! s:encodeURI(path)
   return ret
 endfunction
 
+function! s:GetBase(extra)
+  let base = expand("~/.javacomplete2/". a:extra)
+  if !isdirectory(base)
+    call mkdir(base, "p")
+  endif
+
+  return base
+endfunction
+
 function! s:FindClassPath() abort
   if executable('mvn')
-    let key = s:encodeURI(fnamemodify('.', ':p'))
-    let base = expand('~/.javacomplete2/mvnclasspath/')
-    if !isdirectory(base)
-      call mkdir(base, "p")
-    endif
+    let base = s:GetBase("mvnclasspath/")
+    let key = substitute(g:JavaComplete_PomPath, s:FILE_SEP, '_', 'g')
     let path = base . key
 
-    let pom = findfile('pom.xml', escape(expand('%:p:h'), '*[]?{}, ') . ';')
-    if pom != "" && filereadable(path)
-      if getftime(path) >= getftime('pom.xml')
+    if g:JavaComplete_PomPath != "" && filereadable(path)
+      if getftime(path) >= getftime(g:JavaComplete_PomPath)
         return join(readfile(path), '')
       endif
     endif
-    return s:GenerateClassPath(path)
+    return s:GenerateClassPath(path, g:JavaComplete_PomPath)
   else
     return '.'
   endif
 endfunction
 
-function! s:GenerateClassPath(path) abort
-  let lines = split(system('mvn dependency:build-classpath -DincludeScope=test'), "\n")
+function! s:GenerateClassPath(path, pom) abort
+  let lines = split(system('mvn --file ' . a:pom . ' dependency:build-classpath -DincludeScope=test'), "\n")
   for i in range(len(lines))
     if lines[i] =~ 'Dependencies classpath:'
       let cp = lines[i+1]
@@ -2230,7 +2340,7 @@ function! javacomplete#CompileJavavi()
     exe '!'. 'mvn -f "'. javaviDir. '/pom.xml" compile'
   else
     call mkdir(javaviDir. "target/classes", "p")
-    exe '!'. javacomplete#GetCompiler(). ' -d '. javaviDir. 'target/classes -classpath '. javaviDir. 'target/classes:'. g:JavaComplete_Home. '/libs/javaparser.jar'. s:PATH_SEP .' -sourcepath '. javaviDir. 'src/main/java: -g -nowarn -target 1.7 -source 1.7 -encoding UTF-8 '. javaviDir. 'src/main/java/kg/ash/javavi/Javavi.java'
+    exe '!'. javacomplete#GetCompiler(). ' -d '. javaviDir. 'target/classes -classpath '. javaviDir. 'target/classes:'. g:JavaComplete_Home. '/libs/javaparser.jar'. s:PATH_SEP .' -sourcepath '. javaviDir. 'src/main/java: -g -nowarn -target 1.8 -source 1.8 -encoding UTF-8 '. javaviDir. 'src/main/java/kg/ash/javavi/Javavi.java'
   endif
 endfunction
 
@@ -2559,17 +2669,14 @@ endfu
 fu! s:SetCurrentFileKey()
   let s:curfilekey = empty(expand('%')) ? bufnr('%') : expand('%:p')
 endfu
-
 call s:SetCurrentFileKey()
-if has("autocmd")
-  augroup javacomplete
-    autocmd!
-    autocmd BufEnter *.java call s:SetCurrentFileKey()
-    autocmd FileType java call s:SetCurrentFileKey()
-    autocmd VimLeave * call javacomplete#TerminateServer()
-  augroup END
-endif
 
+function! s:CheckForExistCompletedClassName()
+  if exists('g:ClassnameCompleted') && g:ClassnameCompleted
+    call javacomplete#AddImport()
+    let g:ClassnameCompleted = 0
+  endif
+endfu
 
 " Log utilities								{{{1
 fu! s:WatchVariant(variant)
@@ -2593,15 +2700,16 @@ fu! s:Sort(ci)
   return ci
 endfu
 
-" Function to run Reflection						{{{2
-fu! s:RunReflection(option, args, log)
+" Function for server communication						{{{2
+fu! s:CommunicateToServer(option, args, log)
   if !s:PollServer()
     call javacomplete#StartServer()
   endif
 
   if s:PollServer()
-    let cmd = a:option. ' "'. a:args. '"'
-    call s:Info("RunReflection: ". cmd. " [". a:log. "]")
+    let args = substitute(a:args, '"', '\\"', 'g')
+    let cmd = a:option. ' "'. args. '"'
+    call s:Info("CommunicateToServer: ". cmd. " [". a:log. "]")
     let a:result = ""
 JavacompletePy << EOPC
 vim.command('let a:result = "%s"' % bridgeState.send(vim.eval("cmd")))
@@ -2685,7 +2793,7 @@ fu! s:FetchClassInfo(fqn)
     return s:cache[a:fqn]
   endif
 
-  let res = s:RunReflection('-E', a:fqn, 'FetchClassInfo in Batch')
+  let res = s:CommunicateToServer('-E', a:fqn, 'FetchClassInfo in Batch')
   if res =~ "^{'"
     let dict = eval(res)
     for key in keys(dict)
@@ -2714,8 +2822,12 @@ function! s:DoGetClassInfo(class, ...)
     return s:ARRAY_TYPE_INFO
   endif
 
+  let filekey	= a:0 > 0 && len(a:1) > 0 ? a:1 : s:GetCurrentFileKey()
+  let packagename = a:0 > 1 && len(a:2) > 0 ? a:2 : s:GetPackageName()
+
   " either this or super is not qualified
-  if a:class == 'this' || a:class == 'super'
+  let t = get(s:SearchTypeAt(javacomplete#parse(), java_parser#MakePos(line('.')-1, col('.')-1)), -1, {})
+  if a:class == 'this' || a:class == 'super' || t.fqn == packagename.'.'.a:class
     if &ft == 'jsp'
       let ci = s:DoGetReflectionClassInfo('javax.servlet.jsp.HttpJspPage')
       if a:class == 'this'
@@ -2728,7 +2840,6 @@ function! s:DoGetClassInfo(class, ...)
 
     call s:Info('A0. ' . a:class)
     " this can be a local class or anonymous class as well as static type
-    let t = get(s:SearchTypeAt(javacomplete#parse(), java_parser#MakePos(line('.')-1, col('.')-1)), -1, {})
     if !empty(t)
       " What will be returned for super?
       " - the protected or public inherited fields and methods. No ctors.
@@ -2738,8 +2849,6 @@ function! s:DoGetClassInfo(class, ...)
       " - besides the above, all fields and methods of current class. No ctors.
       return s:Sort(s:Tree2ClassInfo(t))
     endif
-
-    return {}
   endif
 
   let typename = a:class 
@@ -2757,9 +2866,6 @@ function! s:DoGetClassInfo(class, ...)
     return {}
   endif
 
-
-  let filekey	= a:0 > 0 && len(a:1) > 0 ? a:1 : s:GetCurrentFileKey()
-  let packagename = a:0 > 1 && len(a:2) > 0 ? a:2 : s:GetPackageName()
 
   let typeArgumentsCollected = s:CollectTypeArguments(typeArguments, packagename, filekey)
 
@@ -2904,7 +3010,7 @@ endfunction
 " See ClassInfoFactory.getClassInfo() in insenvim.
 function! s:DoGetReflectionClassInfo(fqn)
   if !has_key(s:cache, a:fqn)
-    let res = s:RunReflection('-C', a:fqn, 's:DoGetReflectionClassInfo')
+    let res = s:CommunicateToServer('-C', a:fqn, 's:DoGetReflectionClassInfo')
     if res =~ '^{'
       let s:cache[a:fqn] = s:Sort(eval(res))
     elseif res =~ '^['
@@ -2960,28 +3066,31 @@ fu! s:Tree2ClassInfo(t)
   endfor
 
   " convert type name in extends to fqn for class defined in source files
-  if !has_key(a:t, 'classpath') && has_key(a:t, 'extends')
-    if has_key(a:t, 'filepath') && a:t.filepath != s:GetCurrentFileKey()
-      let filepath = a:t.filepath
-      let packagename = get(s:files[filepath].unit, 'package', '')
-    else
-      let filepath = expand('%:p')
-      let packagename = s:GetPackageName()
-    endif
-
-    let extends = a:t.extends
-    let i = 0
-    while i < len(extends)
-      let ci = s:DoGetClassInfo(java_parser#type2Str(extends[i]), filepath, packagename)
-      if type(ci) == type([])
-        let ci = [0]
-      endif
-      if has_key(ci, 'fqn')
-        let extends[i] = ci.fqn
-      endif
-      let i += 1
-    endwhile
+  if has_key(a:t, 'filepath') && a:t.filepath != s:GetCurrentFileKey()
+    let filepath = a:t.filepath
+    let packagename = get(s:files[filepath].unit, 'package', '')
+  else
+    let filepath = expand('%:p')
+    let packagename = s:GetPackageName()
   endif
+
+  if !has_key(a:t, 'extends')
+    let a:t.extends = ['java.lang.Object']
+  endif
+
+  let extends = a:t.extends
+
+  let i = 0
+  while i < len(extends)
+    let ci = s:DoGetClassInfo(java_parser#type2Str(extends[i]), filepath, packagename)
+    if type(ci) == type([])
+      let ci = [0]
+    endif
+    if has_key(ci, 'fqn')
+      let extends[i] = ci.fqn
+    endif
+    let i += 1
+  endwhile
 
   return t
 endfu
@@ -3063,7 +3172,7 @@ fu! s:DoGetInfoByReflection(class, option)
     return s:cache[a:class]
   endif
 
-  let res = s:RunReflection(a:option, a:class, 's:DoGetInfoByReflection')
+  let res = s:CommunicateToServer(a:option, a:class, 's:DoGetInfoByReflection')
   if res =~ '^[{\[]'
     let v = eval(res)
     if type(v) == type([])
@@ -3390,6 +3499,12 @@ function! s:UseFQN()
   return 0
 endfunction
 
+augroup javacomplete
+  autocmd!
+  autocmd BufEnter *.java call s:SetCurrentFileKey()
+  autocmd VimLeave * call javacomplete#TerminateServer()
+  autocmd TextChangedI *.java call s:CheckForExistCompletedClassName()
+augroup END
 
 let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?/?')
 let g:JavaComplete_JavaParserJar = fnamemodify(g:JavaComplete_Home. "/libs/javaparser.jar", "p")
@@ -3414,8 +3529,11 @@ if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepo
     let g:JavaComplete_LibsPath = ""
   endif
 
-  let s:pom = findfile('pom.xml', escape(expand('.'), '*[]?{}, ') . ';')
-  if s:pom != ""
+  if !exists('g:JavaComplete_PomPath')
+    let g:JavaComplete_PomPath = findfile('pom.xml', escape(expand('.'), '*[]?{}, ') . ';')
+  endif
+
+  if g:JavaComplete_PomPath != ""
     let g:JavaComplete_LibsPath .= s:FindClassPath()
   endif
 endif

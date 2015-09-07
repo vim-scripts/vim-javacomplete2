@@ -9,14 +9,20 @@ import java.lang.Thread;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.LinkedList;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.List;
 
 public class Daemon extends Thread {
 
     private int port;
+    private int timeoutSeconds;
+    private Timer timeoutTimer = new Timer();
+    private TimerTask timeoutTask;
 
-    public Daemon(int port) {
+    public Daemon(int port, int timeoutSeconds) {
         this.port = port;
+        this.timeoutSeconds = timeoutSeconds;
     }
 
     public void run() {
@@ -25,6 +31,11 @@ public class Daemon extends Thread {
         Socket clientSocket = null;
 
         while (true) {
+            if (timeoutSeconds > 0) {
+                timeoutTask = new TimeoutTask();
+                timeoutTimer.schedule(timeoutTask, timeoutSeconds * 1000);
+            }
+
             try {
                 if (echoServer == null) {
                     echoServer = new ServerSocket(port);
@@ -36,6 +47,9 @@ public class Daemon extends Thread {
 
             try {
                 clientSocket = echoServer.accept();
+
+                if (timeoutTask != null) timeoutTask.cancel();
+
                 try (
                     BufferedReader is = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
                     PrintStream os = new PrintStream(clientSocket.getOutputStream())
@@ -69,6 +83,9 @@ public class Daemon extends Thread {
         for (char ch : request.toCharArray()) {
             if (quoteFlag) {
                 if (ch == '\\') {
+                    if (slashFlag) {
+                        buff.append("\\");
+                    }
                     slashFlag = true;
                     continue;
                 }
@@ -90,7 +107,10 @@ public class Daemon extends Thread {
                 }
             }
 
-            if ((ch != '"' && !slashFlag) || (ch == '"' && slashFlag)) {
+            if ((ch != '"' && !slashFlag) || ((ch == '"' || ch == 'n') && slashFlag)) {
+                if (slashFlag && ch != '"') {
+                    buff.append('\\');
+                }
                 buff.append(ch);
             }
 
@@ -101,6 +121,13 @@ public class Daemon extends Thread {
         }
 
         return (String[])args.toArray(new String[0]);
+    }
+
+    class TimeoutTask extends TimerTask {
+        public void run() {
+            System.out.println("Shutdown by timeout timer.");
+            System.exit(0);
+        }
     }
 
 }
