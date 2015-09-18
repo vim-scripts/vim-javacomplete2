@@ -34,7 +34,8 @@ Features:
 - Searches class files automatically, using `pom.xml` to append completion classpath;
 - Generics;
 - Lambdas;
-- Annotations completion.
+- Annotations completion;
+- Nested classes.
 
 Features (originally existed):
 - List members of a class, including (static) fields, (static) methods and ctors;
@@ -94,9 +95,9 @@ Add this to your `.vimrc` file:
 
 To enable inserting class imports with F4, add:
 
-`nnoremap <F4> :JCAddImport<cr>`
+`nnoremap <F4> :JCimportAdd<cr>`
 
-`inoremap <F4> <esc>:JCaddImportI<cr>`
+`inoremap <F4> <esc>:JCimportAddI<cr>`
 
 ### Optional
 
@@ -132,7 +133,9 @@ To enable inserting class imports with F4, add:
 `JCserverCompile` - compile server manually;
 
 
-`JCdebugSetLogLevel` - enable logs;
+`JCdebugEnableLogs` - enable logs;
+
+`JCdebugDisableLogs` - disable logs;
 
 `JCdebugGetLogContent` - get debug logs;
 
@@ -163,20 +166,6 @@ To enable inserting class imports with F4, add:
 - Cheng Fang author of original javacomplete plugin;
 - Zhang Li author of vim-javacompleteex plugin;
 - http://github.com/javaparser/javaparser library.
-
-Originally thanked:
-
-- Bram Moolenaar and all Vim contributors for Vim;
-- The insenvim project;
-- The javac and gjc sources;
-- Martin Stubenschrott	author of IComplete;
-- Vissale NEANG		author of OmniCppComplete;
-- David Fishburn		author of SQLComplete and others;
-- Nico Weber		testing on the Mac;
-- Thomas Link		testing on cygwin+bash;
-- Zhixing Yu;
-- Rodrigo Rosenfeld Rosas;
-- Alexandru Mo?oi.
 
 ## FeedBack
 

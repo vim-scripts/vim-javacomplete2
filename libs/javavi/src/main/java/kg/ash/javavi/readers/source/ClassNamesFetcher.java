@@ -1,26 +1,20 @@
 package kg.ash.javavi.readers.source;
 
-import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
-import com.github.javaparser.ast.TypeParameter;
+import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.TreeVisitor;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
-import com.github.javaparser.ast.expr.MethodReferenceExpr;
-import com.github.javaparser.ast.expr.ObjectCreationExpr;
-import com.github.javaparser.ast.expr.QualifiedNameExpr;
-import com.github.javaparser.ast.expr.TypeExpr;
-import com.github.javaparser.ast.stmt.ReturnStmt;
-import com.github.javaparser.ast.stmt.TypeDeclarationStmt;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
-import com.github.javaparser.ast.type.ReferenceType;
 import com.github.javaparser.ast.type.Type;
-import com.github.javaparser.ast.visitor.DumpVisitor;
-import com.github.javaparser.ast.visitor.GenericVisitorAdapter;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
-import java.io.Reader;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -36,13 +30,70 @@ public class ClassNamesFetcher {
     }
 
     public Set<String> getNames() {
-        TypesVisitor visitor = new TypesVisitor();
-        visitor.visit(compilationUnit, null);
+        List<VoidVisitorAdapter> adapters = new ArrayList<>();
+        adapters.add(new ClassTypeVisitor());
+        adapters.add(new TypesVisitor());
+        adapters.add(new AnnotationsVisitor());
+        adapters.forEach(a -> a.visit(compilationUnit, null));
 
         return resultList;
     }
 
+    private class ClassTypeVisitor extends VoidVisitorAdapter<Object> {
+
+        @Override
+        public void visit(ClassOrInterfaceDeclaration type, Object arg) {
+            if (type.getAnnotations() != null) {
+                for (AnnotationExpr expr : type.getAnnotations()) {
+                    resultList.add(expr.getName().getName());
+                }
+            }
+        }
+
+    }
+
+    private class AnnotationsVisitor extends VoidVisitorAdapter<Object> {
+
+        private void addAnnotations(List<AnnotationExpr> annotations) {
+            if (annotations != null) {
+                for (AnnotationExpr expr : annotations) {
+                    resultList.add(expr.getName().getName());
+                }
+            }
+        }
+
+        @Override
+        public void visit(FieldDeclaration type, Object arg) {
+            addAnnotations(type.getAnnotations());
+        }
+
+        @Override
+        public void visit(MethodDeclaration type, Object arg) {
+            addAnnotations(type.getAnnotations());
+
+            if (type.getThrows() != null) {
+                for (NameExpr expr : type.getThrows()) {
+                    resultList.add(expr.getName());
+                }
+            }
+        }
+
+    }
+
     private class TypesVisitor extends VoidVisitorAdapter<Object>{
+
+        @Override
+        public void visit(BlockStmt type, Object arg) {
+            TypesVisitor t = this;
+            TreeVisitor tv = new TreeVisitor() {
+                public void process(Node node) {
+                    if (node instanceof ClassOrInterfaceType) {
+                        t.visit((ClassOrInterfaceType)node, arg);
+                    }
+                }
+            };
+            tv.visitDepthFirst(type);
+        }
 
         @Override
         public void visit(FieldAccessExpr type, Object arg) {
