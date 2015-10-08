@@ -1,6 +1,18 @@
 " Vim completion script for java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-09-14
+
+" It doesn't make sense to do any work if vim doesn't support any Python since
+" we relly on it to properly work.
+if has("python")
+  command! -nargs=1 JavacompletePy py <args>
+  command! -nargs=1 JavacompletePyfile pyfile <args>
+elseif has("python3")
+  command! -nargs=1 JavacompletePy py3 <args>
+  command! -nargs=1 JavacompletePyfile py3file <args>
+else
+  echoerr "Javacomplete needs Python support to run!"
+  finish
+endif
 
 let g:J_ARRAY_TYPE_MEMBERS = [
       \	{'kind': 'm',		'word': 'clone(',	'abbr': 'clone()',	'menu': 'Object clone()', },
@@ -83,16 +95,16 @@ let g:RE_KEYWORDS	= '\<\%(' . join(g:J_KEYWORDS, '\|') . '\)\>'
 
 let g:JAVA_HOME = $JAVA_HOME
 
-let g:j_cache = {}	" FQN -> member list, e.g. {'java.lang.StringBuffer': classinfo, 'java.util': packageinfo, '/dir/TopLevelClass.java': compilationUnit}
-let g:j_files = {}	" srouce file path -> properties, e.g. {filekey: {'unit': compilationUnit, 'changedtick': tick, }}
+let g:JavaComplete_Cache = {}	" FQN -> member list, e.g. {'java.lang.StringBuffer': classinfo, 'java.util': packageinfo, '/dir/TopLevelClass.java': compilationUnit}
+let g:JavaComplete_Files = {}	" srouce file path -> properties, e.g. {filekey: {'unit': compilationUnit, 'changedtick': tick, }}
 
 fu! SScope()
   return s:
 endfu
 
 function! javacomplete#ClearCache()
-  let g:j_cache = {}
-  let g:j_files = {}
+  let g:JavaComplete_Cache = {}
+  let g:JavaComplete_Files = {}
 endfunction
 
 function! javacomplete#Complete(findstart, base)
@@ -108,28 +120,47 @@ function! s:GetBase(extra)
   return base
 endfunction
 
+function! s:ReadClassPathFile(classpath_file)
+  let cp = ''
+  let file = g:JavaComplete_Home. "/autoload/classpath.py"
+  execute "JavacompletePyfile" file
+  JavacompletePy import vim
+  JavacompletePy vim.command("let cp = '%s'" % os.pathsep.join(ReadClasspathFile(vim.eval('a:classpath_file'))).replace('\\', '/'))
+  return cp
+endfunction
+
 function! s:FindClassPath() abort
-  if executable('mvn')
+  if executable('mvn') && g:JavaComplete_PomPath != ""
     let base = s:GetBase("mvnclasspath/")
-    let key = substitute(g:JavaComplete_PomPath, g:FILE_SEP, '_', 'g')
+    let key = substitute(g:JavaComplete_PomPath, '[\\/:;]', '_', 'g')
     let path = base . key
 
-    if g:JavaComplete_PomPath != "" && filereadable(path)
+    if filereadable(path)
       if getftime(path) >= getftime(g:JavaComplete_PomPath)
         return join(readfile(path), '')
       endif
     endif
     return s:GenerateClassPath(path, g:JavaComplete_PomPath)
-  else
-    return '.'
   endif
+
+  if has('python') || has('python3')
+    let classpath_file = fnamemodify(findfile('.classpath', escape(expand('.'), '*[]?{}, ') . ';'), ':p')
+    if !empty(classpath_file) && filereadable(classpath_file)
+      let cp = s:ReadClassPathFile(classpath_file)
+      if !empty(cp)
+        return cp
+      endif
+    endif
+  endif
+
+  return '.'
 endfunction
 
 function! s:GenerateClassPath(path, pom) abort
   let lines = split(system('mvn --file ' . a:pom . ' dependency:build-classpath -DincludeScope=test'), "\n")
   for i in range(len(lines))
     if lines[i] =~ 'Dependencies classpath:'
-      let cp = lines[i+1]
+      let cp = lines[i+1] . g:PATH_SEP . join([fnamemodify(a:pom, ':h'), 'target', 'classes'], g:FILE_SEP)
       call writefile([cp], a:path)
       return cp
     endif
@@ -151,7 +182,7 @@ function! s:GlobPathList(path, pattern, suf)
   endif
 endfunction
 
-" key of g:j_files for current buffer. It may be the full path of current file or the bufnr of unnamed buffer, and is updated when BufEnter, BufLeave.
+" key of g:JavaComplete_Files for current buffer. It may be the full path of current file or the bufnr of unnamed buffer, and is updated when BufEnter, BufLeave.
 function! javacomplete#GetCurrentFileKey()
   return s:GetCurrentFileKey()
 endfunction
@@ -181,9 +212,9 @@ endfunction
 
 augroup javacomplete
   autocmd!
-  autocmd BufEnter *.java call s:SetCurrentFileKey()
+  autocmd BufEnter *.java,*.jsp call s:SetCurrentFileKey()
   autocmd VimLeave * call javacomplete#server#Terminate()
-  autocmd TextChangedI *.java call s:CheckForExistCompletedClassName()
+  autocmd TextChangedI *.java,*.jsp call s:CheckForExistCompletedClassName()
 augroup END
 
 let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?/?')
@@ -193,7 +224,13 @@ call javacomplete#logger#Log("JavaComplete_Home: ". g:JavaComplete_Home)
 
 if !exists("g:JavaComplete_SourcesPath")
   let g:JavaComplete_SourcesPath = ''
-  let sources = s:GlobPathList(getcwd(), '**/src', 0)
+  let sources = s:GlobPathList(getcwd(), 'src', 0)
+  if len(sources) == 0
+    let sources = s:GlobPathList(getcwd(), '*/src', 0)
+  endif
+  if len(sources) == 0
+    let sources = s:GlobPathList(getcwd(), '*/*/src', 0)
+  endif
   for src in sources
     if match(src, '.*build.*') < 0
       let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. src. g:PATH_SEP
@@ -211,11 +248,12 @@ if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepo
 
   if !exists('g:JavaComplete_PomPath')
     let g:JavaComplete_PomPath = findfile('pom.xml', escape(expand('.'), '*[]?{}, ') . ';')
+    if g:JavaComplete_PomPath != ""
+      let g:JavaComplete_PomPath = fnamemodify(g:JavaComplete_PomPath, ':p')
+    endif
   endif
 
-  if g:JavaComplete_PomPath != ""
-    let g:JavaComplete_LibsPath .= s:FindClassPath()
-  endif
+  let g:JavaComplete_LibsPath .= s:FindClassPath()
 endif
 
 function! javacomplete#Start()

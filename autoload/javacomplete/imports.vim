@@ -1,6 +1,5 @@
 " Vim completion script for java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-09-14
 "
 " Everything to work with imports
 
@@ -35,18 +34,25 @@ function! s:GenerateImports()
 
   if &ft == 'jsp'
     while 1
-      let lnum = search('\<import\s*=[''"]', 'Wc')
+      let lnum = search('\<import\s*=\s*[''"]', 'Wc')
       if (lnum == 0)
         break
       endif
 
       let str = getline(lnum)
       if str =~ '<%\s*@\s*page\>' || str =~ '<jsp:\s*directive.page\>'
-        let str = substitute(str, '.*import=[''"]\([a-zA-Z0-9_$.*, \t]\+\)[''"].*', '\1', '')
-        for item in split(str, ',')
-          call add(imports, [substitute(item, '\s', '', 'g'), lnum])
-        endfor
+        let stat = matchlist(str, '.*import\s*=\s*[''"]\([a-zA-Z0-9_$.*, \t]\+\)[''"].*')
+        if !empty(stat)
+          for item in stat[1:]
+            if !empty(item)
+              for i in split(item, ',')
+                call add(imports, [substitute(i, '\s', '', 'g'), lnum])
+              endfor
+            endif
+          endfor
+        endif
       endif
+      call cursor(lnum + 1, 1)
     endwhile
   else
     while 1
@@ -70,7 +76,7 @@ endfunction
 
 function! javacomplete#imports#GetImports(kind, ...)
   let filekey = a:0 > 0 && !empty(a:1) ? a:1 : javacomplete#GetCurrentFileKey()
-  let props = get(g:j_files, filekey, {})
+  let props = get(g:JavaComplete_Files, filekey, {})
   let props['imports']	= filekey == javacomplete#GetCurrentFileKey() ? s:GenerateImports() : props.unit.imports
   let props['imports_static']	= []
   let props['imports_fqn']	= []
@@ -80,17 +86,19 @@ function! javacomplete#imports#GetImports(kind, ...)
   endif
 
   for import in props.imports
-    let subs = split(substitute(import[0], '^\s*\(static\s\+\)\?\(' .g:RE_QUALID. '\%(\s*\.\s*\*\)\?\)\s*$', '\1;\2', ''), ';', 1)
-    let qid = substitute(subs[1] , '\s', '', 'g')
-    if !empty(subs[0])
-      call add(props.imports_static, qid)
-    elseif qid[-1:] == '*'
-      call add(props.imports_star, qid[:-2])
-    else
-      call add(props.imports_fqn, qid)
+    let subs = matchlist(import[0], '^\s*\(static\s\+\)\?\(' .g:RE_QUALID. '\%(\s*\.\s*\*\)\?\)\s*$')
+    if !empty(subs)
+      let qid = substitute(subs[2] , '\s', '', 'g')
+      if !empty(subs[1])
+        call add(props.imports_static, qid)
+      elseif qid[-1:] == '*'
+        call add(props.imports_star, qid[:-2])
+      else
+        call add(props.imports_fqn, qid)
+      endif
     endif
   endfor
-  let g:j_files[filekey] = props
+  let g:JavaComplete_Files[filekey] = props
   return get(props, a:kind, [])
 endfu
 
@@ -128,7 +136,7 @@ function! javacomplete#imports#SearchStaticImports(name, fullmatch)
   " read type info which are not in cache
   let commalist = ''
   for typename in candidates
-    if !has_key(g:j_cache, typename)
+    if !has_key(g:JavaComplete_Cache, typename)
       let commalist .= typename . ','
     endif
   endfor
@@ -137,14 +145,14 @@ function! javacomplete#imports#SearchStaticImports(name, fullmatch)
     if res =~ "^{'"
       let dict = eval(res)
       for key in keys(dict)
-        let g:j_cache[key] = s:Sort(dict[key])
+        let g:JavaComplete_Cache[key] = s:Sort(dict[key])
       endfor
     endif
   endif
 
   " search in all candidates
   for typename in candidates
-    let ti = get(g:j_cache, typename, 0)
+    let ti = get(g:JavaComplete_Cache, typename, 0)
     if type(ti) == type({}) && get(ti, 'tag', '') == 'CLASSDEF'
       let members = javacomplete#complete#SearchMember(ti, a:name, a:fullmatch, 12, 1, 0)
       let result[1] += members[1]
@@ -170,7 +178,11 @@ function! s:SortImports()
     let saveCursor = getcurpos()
     silent execute beginLine.','.lastLine. 'delete _'
     for imp in importsList
-      call append(beginLine - 1, 'import '. imp. ';')
+      if &ft == 'jsp'
+        call append(beginLine - 1, '<%@ page import = "'. imp. '" %>')
+      else
+        call append(beginLine - 1, 'import '. imp. ';')
+      endif
       let beginLine += 1
     endfor
     call setpos('.', saveCursor)
@@ -187,7 +199,15 @@ function! s:AddImport(import)
   endfor
 
   let imports_star = javacomplete#imports#GetImports('imports_star')
+
   let splittedImport = split(a:import, '\.')
+  let className = splittedImport[-1]
+  if className != '*'
+    if has_key(g:JavaComplete_Cache, className)
+      call remove(g:JavaComplete_Cache, className)
+    endif
+  endif
+
   call remove(splittedImport, len(splittedImport) - 1)
   let imp = join(splittedImport, '.')
   for import in imports_star
@@ -201,16 +221,31 @@ function! s:AddImport(import)
   if empty(imports)
     let firstline = getline(1)
     if firstline =~ '^package.*'
-      let insertline = 1
+      let insertline = 3
+      call append(1, '')
     else
-      let insertline = 0
+      let insertline = 1
     endif
+    let saveCursor = getcurpos()
+    while (javacomplete#util#Trim(getline(insertline)) == '')
+      silent execute insertline. 'delete _'
+      let saveCursor[1] -= 1
+    endwhile
+    call setpos('.', saveCursor)
 
-    call append(insertline, 'import '. a:import. ';')
+    if &ft == 'jsp'
+      call append(insertline - 1, '<%@ page import = "'. a:import. '" %>')
+    else
+      call append(insertline - 1, 'import '. a:import. ';')
+    endif
     call append(insertline, '')
   else
     let lastLine = imports[len(imports) - 1][1]
-    call append(lastLine, 'import '. a:import. ';')
+    if &ft == 'jsp'
+      call append(lastLine, '<%@ page import = "'. a:import. '" %>')
+    else
+      call append(lastLine, 'import '. a:import. ';')
+    endif
   endif
 
 endfunction
@@ -240,16 +275,9 @@ function! javacomplete#imports#Add(...)
       let import = result[0]
 
     else
-      if exists('g:ClassnameCompleted') && g:ClassnameCompleted
-        return
-      endif
-
-      let index = 0
-      for cn in result
-        echo "candidate [". index. "]: ". cn
-        let index += 1
-      endfor
-      let userinput = input('select one candidate [0]: ', '')
+      let message = join(map(range(len(result)), '"candidate [".v:val."]: ".result[v:val]'), "\n")
+      let message .= "\nselect one candidate [0]: "
+      let userinput = input(message, '')
       if empty(userinput)
         let userinput = 0
       elseif userinput =~ '^[0-9]*$'
@@ -306,17 +334,14 @@ function! javacomplete#imports#AddMissing()
   let currentBuf = getline(1,'$')
   let current = join(currentBuf, '<_javacomplete-linebreak>')
 
-  let response = javacomplete#server#Communicate('-missing-imports -content', current, 'RemoveUnusedImports')
+  let response = javacomplete#server#Communicate('-missing-imports -content', current, 'AddMissingImports')
   if response =~ '^['
     let missing = eval(response)
     for import in missing
       if len(import) > 1
-        let index = 0
-        for cn in import
-          echo "candidate [". index. "]: ". cn
-          let index += 1
-        endfor
-        let userinput = input('select one candidate [0]: ', '')
+        let message = join(map(range(len(import)), '"candidate [".v:val."]: ".import[v:val]'), "\n")
+        let message .= "\nselect one candidate [0]: "
+        let userinput = input(message, '')
         if empty(userinput)
           let userinput = 0
         elseif userinput =~ '^[0-9]*$'

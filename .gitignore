@@ -17,3 +17,6 @@ libs/javavi/target/
 
 *.lock
 .vim-flavor
+
+doc/tags
+tags

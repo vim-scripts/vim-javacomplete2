@@ -1,21 +1,7 @@
 " Vim completion script for java
 " Maintainer:	artur shaik <ashaihullin@gmail.com>
-" Last Change:	2015-09-14
 "
 " Java server bridge initiator and caller
-
-" It doesn't make sense to do any work if vim doesn't support any Python since
-" we relly on it to properly work.
-if has("python")
-  command! -nargs=1 JavacompletePy py <args>
-  command! -nargs=1 JavacompletePyfile pyfile <args>
-elseif has("python3")
-  command! -nargs=1 JavacompletePy py3 <args>
-  command! -nargs=1 JavacompletePyfile py3file <args>
-else
-  echoerr "Javacomplete needs Python support to run!"
-  finish
-endif
 
 function! s:System(cmd, caller)
   let t = reltime()
@@ -44,16 +30,16 @@ else
 endif
 
 function! s:Poll()
-  let a:value = 0
+  let value = 0
 JavacompletePy << EOPC
 try:
-  vim.command("let a:value = '%d'" % bridgeState.poll())
+  vim.command("let value = '%d'" % bridgeState.poll())
 except:
   # we'll get here if the bridgeState variable was not defined or if it's None.
   # In this case we stop the processing and return the default 0 value.
   pass
 EOPC
-  return a:value
+  return value
 endfunction
 
 function! javacomplete#server#Terminate()
@@ -83,7 +69,7 @@ function! javacomplete#server#Start()
 
     JavacompletePy import vim
     JavacompletePy bridgeState = JavaviBridge()
-    JavacompletePy bridgeState.setupServer(vim.eval('s:GetJVMLauncher()'), vim.eval('args'), vim.eval('classpath'))
+    JavacompletePy bridgeState.setupServer(vim.eval('javacomplete#server#GetJVMLauncher()'), vim.eval('args'), vim.eval('classpath'))
 
   endif
 endfunction
@@ -100,24 +86,24 @@ function! javacomplete#server#ShowPID()
   endif
 endfunction
 
-fu! javacomplete#server#GetCompiler()
-  return exists('s:compiler') && s:compiler !~  '^\s*$' ? s:compiler : 'javac'
-endfu
+function! javacomplete#server#GetCompiler()
+  return exists('g:JavaComplete_JavaCompiler') && g:JavaComplete_JavaCompiler !~  '^\s*$' ? g:JavaComplete_JavaCompiler : 'javac'
+endfunction
 
-fu! javacomplete#server#SetCompiler(compiler)
-  let s:compiler = a:compiler
-endfu
+function! javacomplete#server#SetCompiler(compiler)
+  let g:JavaComplete_JavaCompiler = a:compiler
+endfunction
 
-function! s:GetJVMLauncher()
-  return exists('s:interpreter') && s:interpreter !~  '^\s*$' ? s:interpreter : 'java'
-endfu
+function! javacomplete#server#GetJVMLauncher()
+  return exists('g:JavaComplete_JvmLauncher') && g:JavaComplete_JvmLauncher !~  '^\s*$' ? g:JavaComplete_JvmLauncher : 'java'
+endfunction
 
-function! s:SetJVMLauncher(interpreter)
-  if s:GetJVMLauncher() != a:interpreter
-    let g:j_cache = {}
+function! javacomplete#server#SetJVMLauncher(interpreter)
+  if javacomplete#server#GetJVMLauncher() != a:interpreter
+    let g:JavaComplete_Cache = {}
   endif
-  let s:interpreter = a:interpreter
-endfu
+  let g:JavaComplete_JvmLauncher = a:interpreter
+endfunction
 
 function! javacomplete#server#Compile()
   call javacomplete#server#Terminate()
@@ -164,11 +150,11 @@ function! javacomplete#server#Communicate(option, args, log)
     let args = substitute(a:args, '"', '\\"', 'g')
     let cmd = a:option. ' "'. args. '"'
     call javacomplete#logger#Log("Communicate: ". cmd. " [". a:log. "]")
-    let a:result = ""
+    let result = ""
 JavacompletePy << EOPC
-vim.command('let a:result = "%s"' % bridgeState.send(vim.eval("cmd")))
+vim.command('let result = "%s"' % bridgeState.send(vim.eval("cmd")))
 EOPC
-    return a:result
+    return result
   endif
 
   return ""
@@ -200,7 +186,7 @@ function! javacomplete#server#GetClassPath()
 
   if empty($CLASSPATH)
     if g:JAVA_HOME == ''
-      let java = s:GetJVMLauncher()
+      let java = javacomplete#server#GetJVMLauncher()
       let javaSettings = split(s:System(java. " -XshowSettings", "Get java settings"), '\n')
       for line in javaSettings
         if line =~ 'java\.home'
@@ -246,7 +232,13 @@ function! s:GetExtraPath()
   if exists('g:JavaComplete_LibsPath')
     let paths = split(g:JavaComplete_LibsPath, g:PATH_SEP)
     for path in paths
-      call extend(jars, s:ExpandPathToJars(path))
+      let exp = s:ExpandPathToJars(path)
+      if empty(exp)
+        " ex: target/classes
+        call extend(jars, [path])
+      else
+        call extend(jars, exp)
+      endif
     endfor
   endif
 
