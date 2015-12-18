@@ -98,6 +98,9 @@ let g:JAVA_HOME = $JAVA_HOME
 let g:JavaComplete_Cache = {}	" FQN -> member list, e.g. {'java.lang.StringBuffer': classinfo, 'java.util': packageinfo, '/dir/TopLevelClass.java': compilationUnit}
 let g:JavaComplete_Files = {}	" srouce file path -> properties, e.g. {filekey: {'unit': compilationUnit, 'changedtick': tick, }}
 
+let g:Javacomplete_pom_properties={}   "maven project properties
+let g:Javacomplete_pom_tags = ['build', 'properties']
+
 fu! SScope()
   return s:
 endfu
@@ -108,11 +111,11 @@ function! javacomplete#ClearCache()
 endfunction
 
 function! javacomplete#Complete(findstart, base)
-  return javacomplete#complete#Complete(a:findstart, a:base)
+  return javacomplete#complete#complete#Complete(a:findstart, a:base)
 endfunction
 
 function! s:GetBase(extra)
-  let base = expand("~/.javacomplete2/". a:extra)
+  let base = expand("~". g:FILE_SEP. ".javacomplete2". g:FILE_SEP. a:extra)
   if !isdirectory(base)
     call mkdir(base, "p")
   endif
@@ -122,7 +125,7 @@ endfunction
 
 function! s:ReadClassPathFile(classpath_file)
   let cp = ''
-  let file = g:JavaComplete_Home. "/autoload/classpath.py"
+  let file = g:JavaComplete_Home. join(['', 'autoload', 'classpath.py'], g:FILE_SEP)
   execute "JavacompletePyfile" file
   JavacompletePy import vim
   JavacompletePy vim.command("let cp = '%s'" % os.pathsep.join(ReadClasspathFile(vim.eval('a:classpath_file'))).replace('\\', '/'))
@@ -130,9 +133,19 @@ function! s:ReadClassPathFile(classpath_file)
 endfunction
 
 function! s:FindClassPath() abort
+  let cp = '.'
+
+  if has('python') || has('python3')
+    let classpath_file = fnamemodify(findfile('.classpath', escape(expand('.'), '*[]?{}, ') . ';'), ':p')
+    if !empty(classpath_file) && filereadable(classpath_file)
+      return s:ReadClassPathFile(classpath_file)
+    endif
+  endif
+
+  let base = s:GetBase("classpath". g:FILE_SEP)
+
   if executable('mvn') && g:JavaComplete_PomPath != ""
-    let base = s:GetBase("mvnclasspath/")
-    let key = substitute(g:JavaComplete_PomPath, '[\\/:;]', '_', 'g')
+    let key = substitute(g:JavaComplete_PomPath, '[\\/:;.]', '_', 'g')
     let path = base . key
 
     if filereadable(path)
@@ -140,31 +153,92 @@ function! s:FindClassPath() abort
         return join(readfile(path), '')
       endif
     endif
-    return s:GenerateClassPath(path, g:JavaComplete_PomPath)
+    return s:GenerateMavenClassPath(path, g:JavaComplete_PomPath)
   endif
 
-  if has('python') || has('python3')
-    let classpath_file = fnamemodify(findfile('.classpath', escape(expand('.'), '*[]?{}, ') . ';'), ':p')
-    if !empty(classpath_file) && filereadable(classpath_file)
-      let cp = s:ReadClassPathFile(classpath_file)
-      if !empty(cp)
-        return cp
+  if executable('gradle') || executable('./gradlew') || executable('.\gradlew.bat')
+    if g:JavaComplete_GradlePath != ""
+      let key = substitute(g:JavaComplete_GradlePath, '[\\/:;.]', '_', 'g')
+      let path = base . key
+
+      if filereadable(path)
+        if getftime(path) >= getftime(g:JavaComplete_GradlePath)
+          return join(readfile(path), '')
+        endif
       endif
+      return s:GenerateGradleClassPath(path, g:JavaComplete_GradlePath)
     endif
   endif
 
-  return '.'
+  return cp
 endfunction
 
-function! s:GenerateClassPath(path, pom) abort
-  let lines = split(system('mvn --file ' . a:pom . ' dependency:build-classpath -DincludeScope=test'), "\n")
-  for i in range(len(lines))
-    if lines[i] =~ 'Dependencies classpath:'
-      let cp = lines[i+1] . g:PATH_SEP . join([fnamemodify(a:pom, ':h'), 'target', 'classes'], g:FILE_SEP)
+function! s:GenerateMavenClassPath(path, pom) abort
+  let mvn_properties = s:GetMavenProperties(a:pom)
+  let cp = get(mvn_properties, 'project.dependencybuildclasspath', '.')
+  let cp .= g:PATH_SEP . get(mvn_properties, 'project.build.outputDirectory', join([fnamemodify(a:pom, ':h'), 'target', 'classes'], g:FILE_SEP))
+  let cp .= g:PATH_SEP . get(mvn_properties, 'project.build.testOutputDirectory', join([fnamemodify(a:pom, ':h'), 'target', 'test-classes'], g:FILE_SEP))
+  if cp != '.'
+    call writefile([cp], a:path)
+  endif
+  return cp
+endfunction
+
+function! s:GetMavenProperties(pom)
+  let mvn_properties = {}
+  if !has_key(g:Javacomplete_pom_properties, a:pom)
+    let mvn_cmd = 'mvn --file '. a:pom. ' help:effective-pom dependency:build-classpath -DincludeScope=test'
+    let mvn_is_managed_tag = 1
+    let mvn_settings_output = split(system(mvn_cmd), "\n")
+    let current_path = 'project'
+    for i in range(len(mvn_settings_output))
+      if mvn_settings_output[i] =~ 'Dependencies classpath:'
+        let mvn_properties['project.dependencybuildclasspath'] = mvn_settings_output[i + 1]
+      endif
+      let matches = matchlist(mvn_settings_output[i], '\m^\s*<\([a-zA-Z0-9\-\.]\+\)>\s*$')
+      if mvn_is_managed_tag && !empty(matches)
+        let mvn_is_managed_tag = index(g:Javacomplete_pom_tags, matches[1]) >= 0
+        let current_path .= '.' . matches[1]
+      else
+        let matches = matchlist(mvn_settings_output[i], '\m^\s*</\([a-zA-Z0-9\-\.]\+\)>\s*$')
+        if !empty(matches)
+          let mvn_is_managed_tag = index(g:Javacomplete_pom_tags, matches[1]) < 0
+          let current_path  = substitute(current_path, '\m\.' . matches[1] . '$', '', '')
+        else
+          let matches = matchlist(mvn_settings_output[i], '\m^\s*<\([a-zA-Z0-9\-\.]\+\)>\(.\+\)</[a-zA-Z0-9\-\.]\+>\s*$')
+          if mvn_is_managed_tag && !empty(matches)
+            let mvn_properties[current_path . '.' . matches[1]] = matches[2]
+          endif
+        endif
+      endif
+    endfor
+    let g:Javacomplete_pom_properties[a:pom] = mvn_properties
+  endif
+  return g:Javacomplete_pom_properties[a:pom]
+endfunction
+
+function! s:GenerateGradleClassPath(path, gradle) abort
+  try
+    let f = tempname()
+    if has("win32") || has("win16")
+      let gradle = '.\gradlew.bat'
+    else
+      let gradle = './gradlew'
+    endif
+    if !executable(gradle)
+      let gradle = 'gradle'
+    endif
+    call writefile(["allprojects{apply from: '". g:JavaComplete_Home. g:FILE_SEP. "classpath.gradle'}"], f)
+    let ret = system(gradle. ' -q -I '. shellescape(f). ' classpath')
+    if v:shell_error == 0
+      let cp = filter(split(ret, "\n"), 'v:val =~ "^CLASSPATH:"')[0][10:]
       call writefile([cp], a:path)
       return cp
     endif
-  endfor
+  catch
+  finally
+    call delete(f)
+  endtry
   return '.'
 endfunction
 
@@ -196,48 +270,97 @@ function! s:SetCurrentFileKey()
 endfunction
 call s:SetCurrentFileKey()
 
-function! s:CheckForExistCompletedClassName()
-  if exists('g:ClassnameCompleted') && g:ClassnameCompleted
+function! s:HandleTextChangedI()
+  if get(g:, 'JC_ClassnameCompletedFlag', 0)
+    let g:JC_ClassnameCompletedFlag = 0
     call javacomplete#imports#Add()
-    let g:ClassnameCompleted = 0
   endif
-endfu
+
+  if get(g:, 'JC_DeclarationCompletedFlag', 0)
+    let line = getline('.')
+    if line[col('.') - 2] != ' ' 
+      return
+    endif
+
+    let g:JC_DeclarationCompletedFlag = 0
+
+    if line !~ '.*@Override.*'
+      let line = getline(line('.') - 1)
+    endif
+
+    if line =~ '.*@Override\s\+\(\S\+\|\)\(\s\+\|\)$'
+      return
+    endif
+
+    if !empty(javacomplete#util#Trim(getline('.')))
+      call feedkeys("\b\r", "n")
+    endif
+    if get(g:, 'JavaComplete_ClosingBrace', 1)
+      call feedkeys("}\eO", "n")
+    endif
+  endif
+endfunction
+
+function! s:HandleInsertLeave()
+  if get(g:, 'JC_DeclarationCompletedFlag', 0)
+    let g:JC_DeclarationCompletedFlag = 0
+  endif
+  if get(g:, 'JC_ClassnameCompletedFlag', 0)
+    let g:JC_ClassnameCompletedFlag = 0
+  endif
+endfunction
 
 function! javacomplete#UseFQN() 
-  if exists('g:JavaComplete_UseFQN') && g:JavaComplete_UseFQN
-    return 1
+  return get(g:, 'JavaComplete_UseFQN', 0)
+endfunction
+
+function! s:RemoveCurrentFromCache()
+  let package = javacomplete#complete#complete#GetPackageName()
+  let classname = split(expand('%:t'), '\.')[0]
+  let fqn = package. '.'. classname
+  if has_key(g:JavaComplete_Cache, fqn)
+    call remove(g:JavaComplete_Cache, fqn)
   endif
-  return 0
+  call javacomplete#server#Communicate('-clear-from-cache', fqn, 's:RemoveCurrentFromCache')
 endfunction
 
 augroup javacomplete
   autocmd!
   autocmd BufEnter *.java,*.jsp call s:SetCurrentFileKey()
+  autocmd BufWrite *.java call s:RemoveCurrentFromCache()
   autocmd VimLeave * call javacomplete#server#Terminate()
-  autocmd TextChangedI *.java,*.jsp call s:CheckForExistCompletedClassName()
+
+  if has("patch-7.3.867")
+    autocmd TextChangedI *.java,*.jsp call s:HandleTextChangedI()
+  endif
+  autocmd InsertLeave *.java,*.jsp call s:HandleInsertLeave()
 augroup END
 
-let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?/?')
-let g:JavaComplete_JavaParserJar = fnamemodify(g:JavaComplete_Home. "/libs/javaparser.jar", "p")
+let g:JavaComplete_Home = fnamemodify(expand('<sfile>'), ':p:h:h:gs?\\?'. g:FILE_SEP. '?')
+let g:JavaComplete_JavaParserJar = fnamemodify(g:JavaComplete_Home. join(['', 'libs', 'javaparser.jar'], g:FILE_SEP), "p")
 
 call javacomplete#logger#Log("JavaComplete_Home: ". g:JavaComplete_Home)
 
-if !exists("g:JavaComplete_SourcesPath")
-  let g:JavaComplete_SourcesPath = ''
-  let sources = s:GlobPathList(getcwd(), 'src', 0)
-  if len(sources) == 0
-    let sources = s:GlobPathList(getcwd(), '*/src', 0)
+let g:JavaComplete_SourcesPath = get(g:, 'JavaComplete_SourcesPath', '')
+let s:sources = s:GlobPathList(getcwd(), 'src', 0)
+for i in ['*/', '*/*/', '*/*/*/']
+  call extend(s:sources, s:GlobPathList(getcwd(), i. g:FILE_SEP. 'src', 0))
+endfor
+for src in s:sources
+  if match(src, '.*build.*') < 0
+    let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. g:PATH_SEP.src
   endif
-  if len(sources) == 0
-    let sources = s:GlobPathList(getcwd(), '*/*/src', 0)
-  endif
-  for src in sources
-    if match(src, '.*build.*') < 0
-      let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. src. g:PATH_SEP
-    endif
+endfor
+unlet s:sources
+
+if filereadable(getcwd(). g:FILE_SEP. "build.gradle")
+  let rjava = s:GlobPathList(getcwd(), join(['**', 'build', 'generated', 'source', '**', 'debug'], g:FILE_SEP), 0)
+  for r in rjava
+    let g:JavaComplete_SourcesPath = g:JavaComplete_SourcesPath. g:PATH_SEP.r
   endfor
-  call javacomplete#logger#Log("Default sources: ". g:JavaComplete_SourcesPath)
 endif
+
+call javacomplete#logger#Log("Default sources: ". g:JavaComplete_SourcesPath)
 
 if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepositoryDisable
   if exists('g:JavaComplete_LibsPath')
@@ -250,6 +373,17 @@ if !exists('g:JavaComplete_MavenRepositoryDisable') || !g:JavaComplete_MavenRepo
     let g:JavaComplete_PomPath = findfile('pom.xml', escape(expand('.'), '*[]?{}, ') . ';')
     if g:JavaComplete_PomPath != ""
       let g:JavaComplete_PomPath = fnamemodify(g:JavaComplete_PomPath, ':p')
+    endif
+  endif
+
+  if !exists('g:JavaComplete_GradlePath')
+    if filereadable(getcwd(). g:FILE_SEP. "build.gradle")
+      let g:JavaComplete_GradlePath = getcwd(). g:FILE_SEP. "build.gradle"
+    else
+      let g:JavaComplete_GradlePath = findfile('build.gradle', escape(expand('.'), '*[]?{}, '). ';')
+    endif
+    if g:JavaComplete_GradlePath != ""
+      let g:JavaComplete_GradlePath = fnamemodify(g:JavaComplete_GradlePath, ':p')
     endif
   endif
 
